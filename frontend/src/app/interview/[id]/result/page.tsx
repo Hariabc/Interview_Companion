@@ -1,7 +1,9 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { CheckCircle, AlertTriangle, BookOpen, Share2 } from 'lucide-react';
+import { supabase } from '@/lib/supabaseClient';
+import axios from 'axios';
+import { CheckCircle, AlertTriangle, BookOpen, Share2, FileText } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 
 export default function InterviewResult() {
@@ -25,10 +27,30 @@ export default function InterviewResult() {
         ]
     };
 
+    // NOTE: In production, point to backend URL
+    const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3000';
+
     useEffect(() => {
-        // Simulate fetch
-        setTimeout(() => setLoading(false), 1000);
-    }, []);
+        const completeSession = async () => {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session) return;
+
+            try {
+                // Mark session as completed
+                await axios.post(`${BACKEND_URL}/interviews/end`, { sessionId: params.id }, {
+                    headers: { Authorization: `Bearer ${session.access_token}` }
+                });
+
+                // We could also fetch real scores here if we wanted to populate the charts with real data
+            } catch (e) {
+                console.error("Error completing session:", e);
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        completeSession();
+    }, [params.id]);
 
     if (loading) return <div className="text-white bg-gray-950 h-screen flex justify-center items-center">Generating Report...</div>;
 
@@ -113,8 +135,8 @@ export default function InterviewResult() {
                     >
                         Back to Dashboard
                     </button>
-                    <button className="px-8 py-3 bg-blue-600 hover:bg-blue-500 rounded-xl font-medium transition flex items-center gap-2">
-                        <Share2 size={18} /> Share Result
+                    <button className="px-8 py-3 bg-blue-600 hover:bg-blue-500 rounded-xl font-medium transition flex items-center gap-2" onClick={() => router.push(`/interview/report/${params.id}`)}>
+                        <FileText size={18} /> View Detailed Report
                     </button>
                 </div>
             </div>

@@ -21,15 +21,25 @@ export default function InterviewRoom() {
     const [feedback, setFeedback] = useState<any>(null);
 
     useEffect(() => {
-        // In a real app, fetch questions for this session from backend
-        // For prototype, we'll mock or assume passed via state/context, but sticking to simple fetch:
-        // This part assumes session creation returned questions or we fetch them now.
-        // Let's populate with dummy data if backend isn't live locally
-        setQuestions([
-            { id: '1', question_text: 'Explain the concept of Virtual DOM in React.' },
-            { id: '2', question_text: 'What is the difference between TCP and UDP?' },
-            { id: '3', question_text: 'Describe a challenging project you worked on.' }
-        ]);
+        const fetchSession = async () => {
+            if (!sessionId) return;
+            try {
+                const { data: { session } } = await supabase.auth.getSession();
+                if (!session) return;
+
+                const response = await axios.get(`${BACKEND_URL}/interviews/${sessionId}`, {
+                    headers: { Authorization: `Bearer ${session.access_token}` }
+                });
+
+                if (response.data.questions) {
+                    setQuestions(response.data.questions);
+                }
+            } catch (error) {
+                console.error("Error fetching session:", error);
+            }
+        };
+
+        fetchSession();
     }, [sessionId]);
 
     const handleAudioSubmit = async (audioBlob: Blob) => {
@@ -48,24 +58,32 @@ export default function InterviewRoom() {
     const submitAnswer = async (text: string | null, audioUrl: string | null) => {
         try {
             const { data: { session } } = await supabase.auth.getSession();
+            if (!session) throw new Error("Not authenticated");
 
-            // Mock Backend Call
-            // const res = await axios.post(`${BACKEND_URL}/interviews/answer`, ...);
+            // Real Backend Call
+            const response = await axios.post(`${BACKEND_URL}/interviews/answer`, {
+                sessionId,
+                questionId: currentQuestion?.id,
+                answerText: text,
+                audioUrl: audioUrl || 'mock-audio-url' // TODO: implement real audio upload
+            }, {
+                headers: { Authorization: `Bearer ${session.access_token}` }
+            });
 
-            // Simulating AI Response for UI demo
-            setTimeout(() => {
-                const mockFeedback = {
-                    semantic_score: 85,
-                    grammar_score: 92,
-                    final_score: 88,
-                    feedback_text: "Great answer! You covered the key points about reconciliation and diffing algorithms. Try to mention Fiber architecture for extra depth."
-                };
-                setFeedback(mockFeedback);
-                setLoading(false);
-            }, 1500);
+            const mlResponse = response.data.evaluation;
+            const nextQ = response.data.next_question;
 
-        } catch (e) {
+            setFeedback(mlResponse);
+
+            if (nextQ) {
+                setQuestions(prev => [...prev, nextQ]);
+            }
+
+            setLoading(false);
+
+        } catch (e: any) {
             console.error(e);
+            alert("Failed to submit answer: " + (e.response?.data?.error || e.message));
             setLoading(false);
         }
     };

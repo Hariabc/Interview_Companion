@@ -20,10 +20,11 @@ def parse_resume_pdf(file_path: str):
     
     found_skills = set()
     
-    # check for exact matches
-    tokens = [t.text.lower() for t in doc]
+    # check for exact matches in full text (case-insensitive)
+    text_lower = text.lower()
     for skill in known_skills:
-        if skill in tokens:
+        # Simple existence check. For more robustness, use regex boundries \b
+        if skill in text_lower:
             found_skills.add(skill)
             
     # Also check specific patterns if needed

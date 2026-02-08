@@ -7,6 +7,7 @@ import { authenticate, AuthRequest } from '../middleware/auth';
 import { supabase } from '../config/supabase';
 
 const router = express.Router();
+console.log("Loading resumeRoutes...");
 const upload = multer({ dest: 'uploads/' }); // Temp storage
 
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';

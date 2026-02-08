@@ -12,6 +12,7 @@ const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:300
 export default function InterviewSetup() {
     const router = useRouter();
     const [file, setFile] = useState<File | null>(null);
+    const [skipResume, setSkipResume] = useState(false);
     const [topics, setTopics] = useState<string[]>([]);
     const [consent, setConsent] = useState(false);
     const [loading, setLoading] = useState(false);
@@ -36,7 +37,8 @@ export default function InterviewSetup() {
 
             const response = await axios.post(`${BACKEND_URL}/interviews/start`, {
                 topics,
-                resumeId: null // or expected ID after upload
+                resumeId: null, // or expected ID after upload
+                skipResume
             }, {
                 headers: { Authorization: `Bearer ${session.access_token}` }
             });
@@ -59,7 +61,23 @@ export default function InterviewSetup() {
 
                 {/* Resume Upload */}
                 <div className="mb-8">
-                    <ResumeUpload />
+                    <div className="flex items-center justify-between mb-4">
+                        <label className="flex items-center gap-2 cursor-pointer text-gray-300 hover:text-white">
+                            <input
+                                type="checkbox"
+                                checked={skipResume}
+                                onChange={(e) => setSkipResume(e.target.checked)}
+                                className="w-5 h-5 rounded border-gray-700 bg-gray-800 text-blue-600 focus:ring-blue-500 bg-opacity-50"
+                            />
+                            <span>I don't have a resume / Practice topics only</span>
+                        </label>
+                    </div>
+
+                    {!skipResume && (
+                        <div className={`transition-all duration-300 ${skipResume ? 'opacity-50 pointer-events-none' : ''}`}>
+                            <ResumeUpload />
+                        </div>
+                    )}
                 </div>
 
                 {/* Topics */}

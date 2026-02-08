@@ -1,4 +1,5 @@
 'use client';
+import { useEffect, useState } from 'react';
 import {
     LineChart,
     Line,
@@ -11,11 +12,15 @@ import {
     PolarGrid,
     PolarAngleAxis,
     PolarRadiusAxis,
-    Radar,
-    Legend
+    Radar
 } from 'recharts';
 
 export function ProgressChart({ data }: { data: any[] }) {
+    const [mounted, setMounted] = useState(false);
+    useEffect(() => setMounted(true), []);
+
+    if (!mounted) return <div className="h-64 w-full flex items-center justify-center text-gray-500">Loading chart...</div>;
+
     return (
         <div className="h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
@@ -41,6 +46,11 @@ export function ProgressChart({ data }: { data: any[] }) {
 }
 
 export function MasteryChart({ data }: { data: any[] }) {
+    const [mounted, setMounted] = useState(false);
+    useEffect(() => setMounted(true), []);
+
+    if (!mounted) return <div className="h-64 w-full flex items-center justify-center text-gray-500">Loading chart...</div>;
+
     return (
         <div className="h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">

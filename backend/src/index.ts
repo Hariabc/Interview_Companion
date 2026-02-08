@@ -28,10 +28,12 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 import authRoutes from './routes/authRoutes';
 import interviewRoutes from './routes/interviewRoutes';
 import resumeRoutes from './routes/resumeRoutes';
+import dashboardRoutes from './routes/dashboardRoutes';
 
 app.use('/auth', authRoutes);
 app.use('/interviews', interviewRoutes);
 app.use('/resume', resumeRoutes);
+app.use('/dashboard', dashboardRoutes);
 // app.use('/dashboard', dashboardRoutes);
 
 app.get('/', (req: Request, res: Response) => {

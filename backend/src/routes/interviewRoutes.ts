@@ -14,7 +14,9 @@ router.post('/start', authenticate, async (req: AuthRequest, res) => {
     try {
         // 0. Resolve Resume ID (if null, get latest for user)
         let activeResumeId = resumeId;
-        if (!activeResumeId) {
+        const skipResume = req.body.skipResume;
+
+        if (!activeResumeId && !skipResume) {
             const { data: latestProfile } = await supabase
                 .from('resume_profiles')
                 .select('id')
@@ -39,17 +41,23 @@ router.post('/start', authenticate, async (req: AuthRequest, res) => {
         let questions: any[] = [];
 
         // Fetch resume text
-        const { data: profile } = await supabase
-            .from('resume_profiles')
-            .select('resume_text')
-            .eq('id', activeResumeId)
-            .single();
+        let resume_text = "No resume provided. Candidate is interviewing based on selected topics only.";
 
-        if (profile?.resume_text) {
-            console.log("Generating questions for resume:", activeResumeId); // DEBUG
+        if (activeResumeId) {
+            const { data: profile } = await supabase
+                .from('resume_profiles')
+                .select('resume_text')
+                .eq('id', activeResumeId)
+                .single();
+            if (profile?.resume_text) resume_text = profile.resume_text;
+        }
+
+        // Always attempt generation if we have topics, even without resume
+        if (topics && topics.length > 0) {
+            console.log("Generating questions..."); // DEBUG
             try {
                 const genResponse = await axios.post(`${ML_SERVICE_URL}/generate_questions`, {
-                    resume_text: profile.resume_text,
+                    resume_text: resume_text,
                     topics: topics || ['General']
                 });
 
@@ -61,6 +69,7 @@ router.post('/start', authenticate, async (req: AuthRequest, res) => {
                     // Sanitize Data
                     const sanitizedQuestions = generatedQuestions.map((q: any) => ({
                         ...q,
+                        session_id: session.id,
                         difficulty_level: Math.max(1, Math.min(5, Number(q.difficulty_level) || 1)),
                         ideal_answer_keywords: Array.isArray(q.ideal_answer_keywords) ? q.ideal_answer_keywords : []
                     }));
@@ -80,8 +89,6 @@ router.post('/start', authenticate, async (req: AuthRequest, res) => {
             } catch (genErr) {
                 console.error("Question generation failed:", genErr);
             }
-        } else {
-            console.log("No resume text found for profile:", activeResumeId); // DEBUG
         }
 
         // Fallback: Fetch random questions if generation failed or no resume
@@ -89,12 +96,40 @@ router.post('/start', authenticate, async (req: AuthRequest, res) => {
             const { data: fallbackQuestions, error: qError } = await supabase
                 .from('questions')
                 .select('*')
-                .limit(3);
+                .limit(10);
             if (qError) throw qError;
             questions = fallbackQuestions || [];
         }
 
         res.status(201).json({ session, questions });
+    } catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GET /interviews/:sessionId
+router.get('/:sessionId', authenticate, async (req: AuthRequest, res) => {
+    const { sessionId } = req.params;
+
+    try {
+        const { data: session, error: sessionError } = await supabase
+            .from('interview_sessions')
+            .select('*')
+            .eq('id', sessionId)
+            .single();
+
+        if (sessionError) throw sessionError;
+
+        // Fetch questions specific to this session
+        const { data: questions, error: qError } = await supabase
+            .from('questions')
+            .select('*')
+            .eq('session_id', sessionId)
+            .order('created_at', { ascending: true });
+
+        if (qError) throw qError;
+
+        res.json({ session, questions });
     } catch (error: any) {
         res.status(500).json({ error: error.message });
     }
@@ -116,13 +151,10 @@ router.post('/answer', authenticate, async (req: AuthRequest, res) => {
         if (ansError) throw ansError;
 
         // 2. Call ML Service for Scoring
-        // We do this asynchronously or await it depending on UX requirements. 
-        // Here we await to return immediate feedback.
-
         // Get Question Reference for Ideal Answer
         const { data: question } = await supabase
             .from('questions')
-            .select('ideal_answer_keywords, question_text, ideal_answer_text')
+            .select('ideal_answer_keywords, question_text, ideal_answer_text, topic, difficulty_level')
             .eq('id', questionId)
             .single();
 
@@ -135,14 +167,12 @@ router.post('/answer', authenticate, async (req: AuthRequest, res) => {
         };
 
         // Call ML Microservice
-        // Note: If audioUrl is present, ML service handles transcription first.
         let mlResponse;
         try {
             const response = await axios.post(`${ML_SERVICE_URL}/score_answer`, payload);
             mlResponse = response.data;
         } catch (mlErr) {
             console.error("ML Service unreachable:", mlErr);
-            // Fallback or just return saved answer without score
             return res.json({ answer, message: "Answer saved, scoring pending (ML unavailable)" });
         }
 
@@ -162,7 +192,54 @@ router.post('/answer', authenticate, async (req: AuthRequest, res) => {
 
         if (scoreDbError) console.error("Error saving score:", scoreDbError);
 
-        res.json({ answer, evaluation: mlResponse });
+        // 4. Generate Next Question (Adaptive)
+        let nextQuestion = null;
+        try {
+            // Fetch session to get resume_id
+            const { data: session } = await supabase
+                .from('interview_sessions')
+                .select('resume_profile_id')
+                .eq('id', sessionId)
+                .single();
+
+            if (session?.resume_profile_id) {
+                const { data: profile } = await supabase
+                    .from('resume_profiles')
+                    .select('resume_text')
+                    .eq('id', session.resume_profile_id)
+                    .single();
+
+                if (profile?.resume_text) {
+                    const genResponse = await axios.post(`${ML_SERVICE_URL}/generate_questions`, {
+                        resume_text: profile.resume_text,
+                        topics: [question?.topic || 'General'],
+                        // We could pass difficulty here if we updated the ML service to accept it
+                    });
+
+                    const newQuestions = genResponse.data.questions;
+                    if (newQuestions && newQuestions.length > 0) {
+                        const q = newQuestions[0];
+                        // Insert new question linked to session
+                        const { data: insertedQ, error: insError } = await supabase
+                            .from('questions')
+                            .insert([{
+                                ...q,
+                                session_id: sessionId,
+                                difficulty_level: Math.max(1, Math.min(5, Number(q.difficulty_level) || 3)),
+                                ideal_answer_keywords: Array.isArray(q.ideal_answer_keywords) ? q.ideal_answer_keywords : []
+                            }])
+                            .select()
+                            .single();
+
+                        if (!insError) nextQuestion = insertedQ;
+                    }
+                }
+            }
+        } catch (genErr) {
+            console.error("Failed to generate next question:", genErr);
+        }
+
+        res.json({ answer, evaluation: mlResponse, next_question: nextQuestion });
 
     } catch (error: any) {
         res.status(500).json({ error: error.message });
@@ -182,6 +259,42 @@ router.post('/end', authenticate, async (req: AuthRequest, res) => {
 
     if (error) return res.status(500).json({ error: error.message });
     res.json({ message: "Session completed" });
+});
+
+// GET /interviews/:sessionId/report
+router.get('/:sessionId/report', authenticate, async (req: AuthRequest, res) => {
+    const { sessionId } = req.params;
+
+    try {
+        // 1. Fetch Session
+        const { data: session, error: sessionError } = await supabase
+            .from('interview_sessions')
+            .select('*')
+            .eq('id', sessionId)
+            .single();
+
+        if (sessionError) throw sessionError;
+
+        // 2. Fetch Questions & Answers & Scores
+        // We'll fetch questions and join answers, then join scores to answers
+        const { data: questions, error: qError } = await supabase
+            .from('questions')
+            .select(`
+                *,
+                answers (
+                    *,
+                    ai_scores (*)
+                )
+            `)
+            .eq('session_id', sessionId)
+            .order('created_at', { ascending: true });
+
+        if (qError) throw qError;
+
+        res.json({ session, questions });
+    } catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 export default router;

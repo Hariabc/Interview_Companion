@@ -22,6 +22,7 @@ CREATE TABLE resume_profiles (
 -- QUESTIONS BANK
 CREATE TABLE questions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    session_id UUID REFERENCES interview_sessions(id) ON DELETE CASCADE,
     question_text TEXT NOT NULL,
     topic TEXT NOT NULL, -- e.g., 'React', 'Node.js', 'Behavioral'
     difficulty_level INTEGER CHECK (difficulty_level BETWEEN 1 AND 5),
