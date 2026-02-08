@@ -1,0 +1,93 @@
+openapi: 3.0.0
+info:
+  title: AI Mock Interview API
+  description: API for the Interview Companion platform.
+  version: 1.0.0
+servers:
+  - url: http://localhost:3000
+    description: Local server
+paths:
+  /auth/signup:
+    post:
+      summary: User Signup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                password:
+                  type: string
+                full_name:
+                  type: string
+      responses:
+        '201':
+          description: User created
+  /auth/login:
+    post:
+      summary: User Login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Successful login
+  /interviews/start:
+    post:
+      summary: Start a new interview session
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+             schema:
+               type: object
+               properties:
+                 resumeId:
+                   type: string
+                 topics:
+                   type: array
+                   items:
+                     type: string
+      responses:
+        '201':
+          description: Session started
+  /interviews/answer:
+    post:
+      summary: Submit an answer to a question
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sessionId:
+                  type: string
+                questionId:
+                  type: string
+                answerText:
+                  type: string
+                audioUrl:
+                  type: string
+      responses:
+        '200':
+          description: Answer submitted and evaluated
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

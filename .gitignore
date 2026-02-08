@@ -1,0 +1,34 @@
+# Environment Variables
+.env
+.env.local
+.env.production
+.env.development
+.env.test
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dist/
+build/
+.next/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env/
+ml_service/research/data/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs
+*.log
