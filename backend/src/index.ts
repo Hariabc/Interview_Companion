@@ -29,11 +29,13 @@ import authRoutes from './routes/authRoutes';
 import interviewRoutes from './routes/interviewRoutes';
 import resumeRoutes from './routes/resumeRoutes';
 import dashboardRoutes from './routes/dashboardRoutes';
+import voiceRoutes from './routes/voiceRoutes';
 
 app.use('/auth', authRoutes);
 app.use('/interviews', interviewRoutes);
 app.use('/resume', resumeRoutes);
 app.use('/dashboard', dashboardRoutes);
+app.use('/voice', voiceRoutes);
 // app.use('/dashboard', dashboardRoutes);
 
 app.get('/', (req: Request, res: Response) => {

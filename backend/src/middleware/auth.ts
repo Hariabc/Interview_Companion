@@ -1,8 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
 import { supabase } from '../config/supabase';
+import { createClient } from '@supabase/supabase-js';
 
 export interface AuthRequest extends Request {
     user?: any;
+    userSupabase?: any; // User-authenticated Supabase client
 }
 
 export const authenticate = async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -22,6 +24,21 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
         }
 
         req.user = user;
+
+        // Create a user-authenticated Supabase client for RLS-compliant operations
+        // This client will have the user's JWT token, allowing it to pass RLS policies
+        req.userSupabase = createClient(
+            process.env.SUPABASE_URL!,
+            process.env.SUPABASE_ANON_KEY!,
+            {
+                global: {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
+            }
+        );
+
         next();
     } catch (err) {
         res.status(500).json({ error: 'Authentication failed' });

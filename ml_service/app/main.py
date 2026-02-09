@@ -68,10 +68,17 @@ async def score_answer(request: ScoreRequest):
     final_text = request.answer_text if request.answer_text else transcript
     
     if not final_text:
-        raise HTTPException(status_code=400, detail="No text or audio provided")
+        raise HTTPException(status_code=400, detail="No text or audio provided for scoring")
+    
+    if not request.question_text:
+        raise HTTPException(status_code=400, detail="question_text is required")
 
     # 2. Score Text
-    scores = score_answer_text(final_text, request.question_text, request.ideal_answer_text, request.ideal_keywords)
+    # Provide defaults for optional parameters
+    ideal_answer = request.ideal_answer_text if request.ideal_answer_text else ""
+    ideal_keywords = request.ideal_keywords if request.ideal_keywords else []
+    
+    scores = score_answer_text(final_text, request.question_text, ideal_answer, ideal_keywords)
     
     return {
         **scores,
@@ -81,16 +88,8 @@ async def score_answer(request: ScoreRequest):
 
 @app.post("/analyze_audio")
 async def analyze_audio(file: UploadFile = File(...)):
-    temp_file = f"temp_{file.filename}"
-    with open(temp_file, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-        
-    try:
-        metrics = analyze_audio_file(temp_file)
-    finally:
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
-            
+    # Process directly from memory/spooled temp file
+    metrics = analyze_audio_file(file.file)
     return metrics
 
 @app.post("/suggest_difficulty")

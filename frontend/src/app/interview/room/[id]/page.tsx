@@ -20,12 +20,16 @@ export default function InterviewRoom() {
     const [textAnswer, setTextAnswer] = useState('');
     const [feedback, setFeedback] = useState<any>(null);
 
+    const [sessionToken, setSessionToken] = useState<string | null>(null);
+
     useEffect(() => {
         const fetchSession = async () => {
             if (!sessionId) return;
             try {
                 const { data: { session } } = await supabase.auth.getSession();
                 if (!session) return;
+
+                setSessionToken(session.access_token);
 
                 const response = await axios.get(`${BACKEND_URL}/interviews/${sessionId}`, {
                     headers: { Authorization: `Bearer ${session.access_token}` }
@@ -42,11 +46,14 @@ export default function InterviewRoom() {
         fetchSession();
     }, [sessionId]);
 
-    const handleAudioSubmit = async (audioBlob: Blob) => {
+    const handleVoiceAnalysisComplete = async (analysisData: any) => {
         setLoading(true);
-        // 1. Upload Blob to Supabase Storage (omitted for brevity, assume we get a URL or send Blob to backend)
-        // 2. Submit to Backend
-        await submitAnswer(null, 'mock-audio-url');
+        // analysisData contains: transcript, wpm, fluency_score, publicUrl (from our updated backend)
+        await submitAnswer(
+            analysisData.analysis?.transcript || analysisData.transcript, // Handle potential nesting if backend response changed structure
+            analysisData.publicUrl, // Use the real Supabase URL
+            analysisData.analysis || analysisData // Pass full metrics object
+        );
     };
 
     const handleTextSubmit = async () => {
@@ -55,7 +62,7 @@ export default function InterviewRoom() {
         await submitAnswer(textAnswer, null);
     };
 
-    const submitAnswer = async (text: string | null, audioUrl: string | null) => {
+    const submitAnswer = async (text: string | null, audioUrl: string | null, voiceMetrics: any = null) => {
         try {
             const { data: { session } } = await supabase.auth.getSession();
             if (!session) throw new Error("Not authenticated");
@@ -65,7 +72,8 @@ export default function InterviewRoom() {
                 sessionId,
                 questionId: currentQuestion?.id,
                 answerText: text,
-                audioUrl: audioUrl || 'mock-audio-url' // TODO: implement real audio upload
+                audioUrl: audioUrl,
+                voiceMetrics: voiceMetrics
             }, {
                 headers: { Authorization: `Bearer ${session.access_token}` }
             });
@@ -73,7 +81,7 @@ export default function InterviewRoom() {
             const mlResponse = response.data.evaluation;
             const nextQ = response.data.next_question;
 
-            setFeedback(mlResponse);
+            setFeedback({ ...mlResponse, voiceMetrics }); // Include voice metrics in feedback state
 
             if (nextQ) {
                 setQuestions(prev => [...prev, nextQ]);
@@ -94,7 +102,7 @@ export default function InterviewRoom() {
         if (currentQIndex < questions.length - 1) {
             setCurrentQIndex(currentQIndex + 1);
         } else {
-            router.push(`/interview/${sessionId}/result`);
+            router.push(`/interview/room/${sessionId}/result`);
         }
     };
 
@@ -154,10 +162,20 @@ export default function InterviewRoom() {
                                     <p className="text-gray-300 leading-relaxed mb-6">
                                         {feedback.feedback_text}
                                     </p>
+
+                                    {feedback.voiceMetrics && (
+                                        <div className="grid grid-cols-2 gap-2 text-center text-xs text-gray-400 mb-4 bg-gray-800/50 p-2 rounded">
+                                            <div>Fluency: <span className="text-white font-bold">{feedback.voiceMetrics.fluency_score}/10</span></div>
+                                            <div>Confidence: <span className="text-white font-bold">{feedback.voiceMetrics.confidence_score}/10</span></div>
+                                            <div>WPM: {feedback.voiceMetrics.wpm}</div>
+                                            <div>Fillers: {feedback.voiceMetrics.filler_words}</div>
+                                        </div>
+                                    )}
+
                                     <div className="grid grid-cols-3 gap-2 text-center text-xs text-gray-500 mb-6">
                                         <div className="bg-gray-800 p-2 rounded">Semantic: {feedback.semantic_score}</div>
                                         <div className="bg-gray-800 p-2 rounded">Grammar: {feedback.grammar_score}</div>
-                                        <div className="bg-gray-800 p-2 rounded">Keywords: 8/10</div>
+                                        <div className="bg-gray-800 p-2 rounded">Keywords: {feedback.keyword_score}</div>
                                     </div>
                                 </div>
                                 <button
@@ -170,7 +188,12 @@ export default function InterviewRoom() {
                         ) : (
                             <>
                                 {mode === 'audio' ? (
-                                    <AudioRecorder onRecordingComplete={handleAudioSubmit} />
+                                    <AudioRecorder
+                                        onAnalysisComplete={handleVoiceAnalysisComplete}
+                                        currentQuestionId={currentQuestion?.id}
+                                        sessionToken={sessionToken}
+                                        sessionId={sessionId}
+                                    />
                                 ) : (
                                     <div className="w-full h-full flex flex-col">
                                         <textarea

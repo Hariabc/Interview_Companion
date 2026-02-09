@@ -27,7 +27,7 @@ export default function Dashboard() {
 
             try {
                 // Fetch Dashboard Stats
-                const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}/dashboard/stats`, {
+                const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000'}/dashboard/stats`, {
                     headers: {
                         'Authorization': `Bearer ${session.access_token}`
                     }
@@ -140,13 +140,18 @@ export default function Dashboard() {
                                     {session.total_score && (
                                         <span className="text-emerald-400 font-bold">{session.total_score}%</span>
                                     )}
-                                    {session.status === 'completed' ? (
-                                        <Link href={`/interview/report/${session.id}`} className="text-sm text-green-400 hover:text-green-300">
+                                    <span className={`px-3 py-1 rounded-full text-xs font-medium ${session.status === 'completed' ? 'bg-green-900/30 text-green-400 border border-green-800' :
+                                        session.status === 'in_progress' ? 'bg-blue-900/30 text-blue-400 border border-blue-800' :
+                                            'bg-gray-800 text-gray-400 border border-gray-700'
+                                        }`}>
+                                        {session.status.replace('_', ' ').toUpperCase()}
+                                    </span>
+                                    {session.status === 'completed' && (
+                                        <Link
+                                            href={`/interview/room/${session.id}/result`}
+                                            className="text-xs bg-gray-800 hover:bg-gray-700 text-white px-2 py-1 rounded border border-gray-600 transition"
+                                        >
                                             View Report
-                                        </Link>
-                                    ) : (
-                                        <Link href={`/interview/room/${session.id}`} className="text-sm text-blue-400 hover:text-blue-300">
-                                            Resume
                                         </Link>
                                     )}
                                 </div>

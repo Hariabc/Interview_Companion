@@ -39,7 +39,7 @@ export default function ResumeUpload() {
             formData.append('resume', file);
 
             // Use the backend URL from env or default
-            const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001';
+            const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000';
 
             const response = await fetch(`${backendUrl}/resume/upload`, {
                 method: 'POST',

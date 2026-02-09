@@ -32,3 +32,18 @@ Thumbs.db
 # Logs
 logs
 *.log
+
+# Uploads (use Supabase Storage instead)
+uploads/
+backend/uploads/
+
+# Debug and Test Files
+**/debug_*.ts
+**/debug_*.js
+**/debug_*.py
+**/test_*.js
+**/check_*.ts
+
+# Temporary Files
+*.tmp
+*.temp

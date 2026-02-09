@@ -20,7 +20,7 @@ export default function InterviewReport({ params }: { params: { id: string } }) 
             }
 
             try {
-                const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}/interviews/${id}/report`, {
+                const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000'}/interviews/${id}/report`, {
                     headers: { 'Authorization': `Bearer ${session.access_token}` }
                 });
 

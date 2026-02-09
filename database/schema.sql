@@ -72,7 +72,10 @@ CREATE TABLE confidence_metrics (
     wpm NUMERIC(5, 2), -- Words per minute
     filler_word_count INTEGER,
     pause_duration NUMERIC(5, 2), -- Total pause duration in seconds
-    confidence_level TEXT, -- 'High', 'Medium', 'Low'
+    pitch_variance NUMERIC(5, 2), -- Standard deviation of pitch
+    volume_consistency NUMERIC(5, 2), -- Consistency score 0-1
+    fluency_score NUMERIC(4, 2), -- 0-10 score
+    confidence_score NUMERIC(4, 2), -- 0-10 score
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

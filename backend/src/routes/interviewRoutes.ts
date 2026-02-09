@@ -167,13 +167,31 @@ router.post('/answer', authenticate, async (req: AuthRequest, res) => {
         };
 
         // Call ML Microservice
+        // Only call if we have text to score
+        // For voice answers, analysis was already done during upload
         let mlResponse;
-        try {
-            const response = await axios.post(`${ML_SERVICE_URL}/score_answer`, payload);
-            mlResponse = response.data;
-        } catch (mlErr) {
-            console.error("ML Service unreachable:", mlErr);
-            return res.json({ answer, message: "Answer saved, scoring pending (ML unavailable)" });
+
+        if (answerText && answerText.trim()) {
+            // Text answer - needs scoring
+            try {
+                const response = await axios.post(`${ML_SERVICE_URL}/score_answer`, payload);
+                mlResponse = response.data;
+            } catch (mlErr) {
+                console.error("ML Service unreachable:", mlErr);
+                return res.json({ answer, message: "Answer saved, scoring pending (ML unavailable)" });
+            }
+        } else if (audioUrl) {
+            // Voice answer - analysis was done during upload, use placeholder scores
+            mlResponse = {
+                semantic_score: 0,
+                grammar_score: 0,
+                keyword_score: 0,
+                final_score: 0,
+                feedback_text: "Voice answer recorded. Detailed analysis available in voice metrics."
+            };
+        } else {
+            // No answer provided
+            return res.status(400).json({ error: "No answer text or audio provided" });
         }
 
         // 3. Save Score to DB
@@ -191,6 +209,26 @@ router.post('/answer', authenticate, async (req: AuthRequest, res) => {
             .insert([scoreData]);
 
         if (scoreDbError) console.error("Error saving score:", scoreDbError);
+
+        // 3.5 Save Voice Metrics if present
+        if (req.body.voiceMetrics) {
+            const vm = req.body.voiceMetrics;
+            const metricsData = {
+                answer_id: answer.id,
+                wpm: vm.wpm,
+                filler_word_count: vm.filler_words,
+                pause_duration: vm.pause_duration,
+                pitch_variance: vm.pitch_variance,
+                volume_consistency: vm.volume_consistency,
+                fluency_score: vm.fluency_score,
+                confidence_score: vm.confidence_score
+            };
+            const { error: voiceError } = await supabase
+                .from('confidence_metrics')
+                .insert([metricsData]);
+
+            if (voiceError) console.error("Error saving voice metrics:", voiceError);
+        }
 
         // 4. Generate Next Question (Adaptive)
         let nextQuestion = null;
@@ -249,16 +287,46 @@ router.post('/answer', authenticate, async (req: AuthRequest, res) => {
 // POST /interviews/end
 router.post('/end', authenticate, async (req: AuthRequest, res) => {
     const { sessionId } = req.body;
-    // Calculate total score and update session status
-    // ... logic to aggregate scores ...
 
-    const { error } = await supabase
-        .from('interview_sessions')
-        .update({ status: 'completed', end_time: new Date() })
-        .eq('id', sessionId);
+    try {
+        // First, get all answers for this session
+        const { data: answers, error: answersError } = await supabase
+            .from('answers')
+            .select('id')
+            .eq('session_id', sessionId);
 
-    if (error) return res.status(500).json({ error: error.message });
-    res.json({ message: "Session completed" });
+        if (answersError) throw answersError;
+
+        let totalScore = 0;
+        if (answers && answers.length > 0) {
+            // Get all scores for these answers
+            const answerIds = answers.map(a => a.id);
+            const { data: scores, error: scoresError } = await supabase
+                .from('ai_scores')
+                .select('final_score')
+                .in('answer_id', answerIds);
+
+            if (!scoresError && scores && scores.length > 0) {
+                const sum = scores.reduce((acc, s) => acc + (s.final_score || 0), 0);
+                totalScore = Math.round(sum / scores.length);
+            }
+        }
+
+        // Update session status and total score
+        const { error } = await supabase
+            .from('interview_sessions')
+            .update({
+                status: 'completed',
+                end_time: new Date(),
+                total_score: totalScore
+            })
+            .eq('id', sessionId);
+
+        if (error) return res.status(500).json({ error: error.message });
+        res.json({ message: "Session completed", total_score: totalScore });
+    } catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // GET /interviews/:sessionId/report
