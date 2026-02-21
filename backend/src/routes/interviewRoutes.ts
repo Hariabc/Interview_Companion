@@ -5,11 +5,38 @@ import axios from 'axios';
 
 const router = express.Router();
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+const SKIP_ANSWER_MARKER = '[SKIPPED_BY_USER]';
+const MANDATORY_TECHNICAL_TOPICS = ['Data Structures and Algorithms'];
+
+function withMandatoryTechnicalTopics(topics: any): string[] {
+    const input = Array.isArray(topics) ? topics : [];
+    const normalized = input
+        .map((t) => String(t || '').trim())
+        .filter(Boolean);
+
+    const existingLower = new Set(normalized.map((t) => t.toLowerCase()));
+    for (const required of MANDATORY_TECHNICAL_TOPICS) {
+        if (!existingLower.has(required.toLowerCase())) {
+            normalized.push(required);
+        }
+    }
+
+    return normalized;
+}
+
+function detectConversationSignals(text: string) {
+    const normalized = String(text || '').toLowerCase();
+    return {
+        asks_for_help: /(help me|hint|clue|guidance|i don't know|dont know|not sure|confused)/.test(normalized),
+        asks_to_skip: /(skip|pass this|move on|next question)/.test(normalized)
+    };
+}
 
 // POST /interviews/start
 router.post('/start', authenticate, async (req: AuthRequest, res) => {
     const { resumeId, topics } = req.body;
     const userId = req.user.id;
+    console.log('Starting interview for user:', userId, 'resumeId:', resumeId);
 
     try {
         // 0. Resolve Resume ID (if null, get latest for user)
@@ -28,82 +55,50 @@ router.post('/start', authenticate, async (req: AuthRequest, res) => {
             if (latestProfile) activeResumeId = latestProfile.id;
         }
 
-        // 1. Create a session
+        // 0.5. Ensure user exists in public.users (in case sync trigger failed or hasn't run)
+        // This prevents foreign key constraint violations
+        const { error: userSyncError } = await supabase
+            .from('users')
+            .upsert({
+                id: userId,
+                email: req.user.email,
+                full_name: req.user.user_metadata?.full_name || null
+            }, { onConflict: 'id' });
+
+        if (userSyncError) {
+            console.error('Error syncing user to public table:', userSyncError);
+        }
+
+        // 1. Create a session with conversation phase enabled
         const { data: session, error: sessionError } = await supabase
             .from('interview_sessions')
-            .insert([{ user_id: userId, resume_profile_id: activeResumeId, status: 'in_progress' }])
+            .insert([{
+                user_id: userId,
+                resume_profile_id: activeResumeId,
+                status: 'in_progress',
+                conversation_phase: true  // Start with conversation phase
+            }])
             .select()
             .single();
 
-        if (sessionError) throw sessionError;
-
-        // 2. Generate Dynamic Questions based on Resume
-        let questions: any[] = [];
-
-        // Fetch resume text
-        let resume_text = "No resume provided. Candidate is interviewing based on selected topics only.";
-
-        if (activeResumeId) {
-            const { data: profile } = await supabase
-                .from('resume_profiles')
-                .select('resume_text')
-                .eq('id', activeResumeId)
-                .single();
-            if (profile?.resume_text) resume_text = profile.resume_text;
+        if (sessionError) {
+            console.error('Session creation error:', sessionError);
+            throw sessionError;
         }
 
-        // Always attempt generation if we have topics, even without resume
-        if (topics && topics.length > 0) {
-            console.log("Generating questions..."); // DEBUG
-            try {
-                const genResponse = await axios.post(`${ML_SERVICE_URL}/generate_questions`, {
-                    resume_text: resume_text,
-                    topics: topics || ['General']
-                });
-
-                // The ML service returns { questions: [...] }
-                const generatedQuestions = genResponse.data.questions;
-                console.log("Received generated questions:", generatedQuestions?.length); // DEBUG
-
-                if (generatedQuestions && generatedQuestions.length > 0) {
-                    // Sanitize Data
-                    const sanitizedQuestions = generatedQuestions.map((q: any) => ({
-                        ...q,
-                        session_id: session.id,
-                        difficulty_level: Math.max(1, Math.min(5, Number(q.difficulty_level) || 1)),
-                        ideal_answer_keywords: Array.isArray(q.ideal_answer_keywords) ? q.ideal_answer_keywords : []
-                    }));
-
-                    // Insert into DB
-                    const { data: insertedQuestions, error: insError } = await supabase
-                        .from('questions')
-                        .insert(sanitizedQuestions)
-                        .select();
-
-                    if (!insError && insertedQuestions) {
-                        questions = insertedQuestions;
-                    } else {
-                        console.error("Failed to insert generated questions:", insError);
-                    }
-                }
-            } catch (genErr) {
-                console.error("Question generation failed:", genErr);
-            }
-        }
-
-        // Fallback: Fetch random questions if generation failed or no resume
-        if (!questions || questions.length === 0) {
-            const { data: fallbackQuestions, error: qError } = await supabase
-                .from('questions')
-                .select('*')
-                .limit(10);
-            if (qError) throw qError;
-            questions = fallbackQuestions || [];
-        }
-
-        res.status(201).json({ session, questions });
+        // Don't generate questions immediately - conversation phase will handle this
+        // Return session to allow frontend to start conversation
+        res.status(201).json({
+            session,
+            questions: [],  // Empty - questions will be generated after conversation
+            conversation_phase: true
+        });
     } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Interview start error:', error);
+        res.status(500).json({
+            error: error.message,
+            details: error.details || error.hint || null
+        });
     }
 });
 
@@ -129,7 +124,11 @@ router.get('/:sessionId', authenticate, async (req: AuthRequest, res) => {
 
         if (qError) throw qError;
 
-        res.json({ session, questions });
+        const context = session?.conversation_context || {};
+        const codingRound = context?.coding_round || null;
+        const codingRoundHistory = Array.isArray(context?.coding_round_history) ? context.coding_round_history : [];
+
+        res.json({ session, questions, coding_round: codingRound, coding_round_history: codingRoundHistory });
     } catch (error: any) {
         res.status(500).json({ error: error.message });
     }
@@ -141,6 +140,19 @@ router.post('/answer', authenticate, async (req: AuthRequest, res) => {
     // answerText OR audioUrl should be present
 
     try {
+        if (!sessionId) {
+            return res.status(400).json({ error: "sessionId is required" });
+        }
+        if (!questionId) {
+            return res.status(400).json({ error: "questionId is required" });
+        }
+        if ((!answerText || !String(answerText).trim()) && !audioUrl) {
+            return res.status(400).json({ error: "No answer text or audio provided" });
+        }
+
+        const normalizedAnswerText = String(answerText || '').trim();
+        const skippedByUser = normalizedAnswerText.startsWith(SKIP_ANSWER_MARKER);
+
         // 1. Save Answer to DB
         const { data: answer, error: ansError } = await supabase
             .from('answers')
@@ -148,7 +160,15 @@ router.post('/answer', authenticate, async (req: AuthRequest, res) => {
             .select()
             .single();
 
-        if (ansError) throw ansError;
+        if (ansError) {
+            console.error("Error saving answer:", ansError);
+            return res.status(500).json({
+                error: ansError.message || "Failed to save answer",
+                details: ansError.details || null,
+                hint: ansError.hint || null,
+                code: ansError.code || null
+            });
+        }
 
         // 2. Call ML Service for Scoring
         // Get Question Reference for Ideal Answer
@@ -171,7 +191,15 @@ router.post('/answer', authenticate, async (req: AuthRequest, res) => {
         // For voice answers, analysis was already done during upload
         let mlResponse;
 
-        if (answerText && answerText.trim()) {
+        if (skippedByUser) {
+            mlResponse = {
+                semantic_score: 0,
+                grammar_score: 0,
+                keyword_score: 0,
+                final_score: 0,
+                feedback_text: "Question skipped by user."
+            };
+        } else if (answerText && answerText.trim()) {
             // Text answer - needs scoring
             try {
                 const response = await axios.post(`${ML_SERVICE_URL}/score_answer`, payload);
@@ -218,8 +246,6 @@ router.post('/answer', authenticate, async (req: AuthRequest, res) => {
                 wpm: vm.wpm,
                 filler_word_count: vm.filler_words,
                 pause_duration: vm.pause_duration,
-                pitch_variance: vm.pitch_variance,
-                volume_consistency: vm.volume_consistency,
                 fluency_score: vm.fluency_score,
                 confidence_score: vm.confidence_score
             };
@@ -233,43 +259,128 @@ router.post('/answer', authenticate, async (req: AuthRequest, res) => {
         // 4. Generate Next Question (Adaptive)
         let nextQuestion = null;
         try {
-            // Fetch session to get resume_id
+            // Fetch session context and resume_id for conversational/adaptive follow-ups
             const { data: session } = await supabase
                 .from('interview_sessions')
-                .select('resume_profile_id')
+                .select('resume_profile_id, conversation_context')
                 .eq('id', sessionId)
                 .single();
 
+            let resumeText: string | null = null;
             if (session?.resume_profile_id) {
                 const { data: profile } = await supabase
                     .from('resume_profiles')
                     .select('resume_text')
                     .eq('id', session.resume_profile_id)
                     .single();
+                resumeText = profile?.resume_text || null;
+            }
 
-                if (profile?.resume_text) {
-                    const genResponse = await axios.post(`${ML_SERVICE_URL}/generate_questions`, {
-                        resume_text: profile.resume_text,
-                        topics: [question?.topic || 'General'],
-                        // We could pass difficulty here if we updated the ML service to accept it
-                    });
+            const avgScore = req.body.voiceMetrics
+                ? ((Number(req.body.voiceMetrics.confidence_score || 0) + Number(req.body.voiceMetrics.fluency_score || 0)) / 2)
+                : 6;
+            const difficultyHint = avgScore >= 8 ? 4 : avgScore >= 6 ? 3 : 2;
+            const answerForContext = skippedByUser ? "User skipped this question." : String(answerText || "");
+            const userSignals = detectConversationSignals(answerForContext);
 
-                    const newQuestions = genResponse.data.questions;
-                    if (newQuestions && newQuestions.length > 0) {
-                        const q = newQuestions[0];
-                        // Insert new question linked to session
-                        const { data: insertedQ, error: insError } = await supabase
-                            .from('questions')
-                            .insert([{
-                                ...q,
-                                session_id: sessionId,
-                                difficulty_level: Math.max(1, Math.min(5, Number(q.difficulty_level) || 3)),
-                                ideal_answer_keywords: Array.isArray(q.ideal_answer_keywords) ? q.ideal_answer_keywords : []
-                            }])
-                            .select()
-                            .single();
+            let conversationHistory: Array<{ speaker: 'interviewer' | 'candidate'; text: string }> = [];
+            try {
+                const { data: recentAnswers } = await supabase
+                    .from('answers')
+                    .select('question_id, answer_text, created_at')
+                    .eq('session_id', sessionId)
+                    .order('created_at', { ascending: false })
+                    .limit(4);
 
-                        if (!insError) nextQuestion = insertedQ;
+                const orderedAnswers = [...(recentAnswers || [])].reverse();
+                const questionIds = orderedAnswers.map((a: any) => a.question_id).filter(Boolean);
+
+                let questionMap = new Map<string, string>();
+                if (questionIds.length > 0) {
+                    const { data: linkedQuestions } = await supabase
+                        .from('questions')
+                        .select('id, question_text')
+                        .in('id', questionIds);
+
+                    questionMap = new Map((linkedQuestions || []).map((q: any) => [q.id, q.question_text]));
+                }
+
+                conversationHistory = orderedAnswers.flatMap((a: any) => {
+                    const qText = questionMap.get(a.question_id);
+                    const turns: Array<{ speaker: 'interviewer' | 'candidate'; text: string }> = [];
+                    if (qText) turns.push({ speaker: 'interviewer', text: qText });
+                    if (a.answer_text) turns.push({ speaker: 'candidate', text: a.answer_text });
+                    return turns;
+                });
+            } catch (historyErr) {
+                console.error('Failed to build conversation history for contextual generation:', historyErr);
+            }
+
+            const contextTopics = Array.isArray(session?.conversation_context?.key_topics) && session?.conversation_context?.key_topics?.length
+                ? session.conversation_context.key_topics
+                : (Array.isArray(session?.conversation_context?.areas_of_interest) && session?.conversation_context?.areas_of_interest?.length
+                    ? session.conversation_context.areas_of_interest
+                    : ['General']);
+
+            const contextTopicsWithTechnical = withMandatoryTechnicalTopics(contextTopics);
+            const { data: askedQuestionRows } = await supabase
+                .from('questions')
+                .select('question_text')
+                .eq('session_id', sessionId)
+                .order('created_at', { ascending: true });
+            const askedQuestions = (askedQuestionRows || [])
+                .map((row: any) => String(row.question_text || '').trim())
+                .filter(Boolean);
+
+            const contextualResponse = await axios.post(`${ML_SERVICE_URL}/conversation/generate_contextual_questions`, {
+                user_intro_analysis: {
+                    ...(session?.conversation_context || {}),
+                    user_signals: userSignals
+                },
+                resume_text: resumeText,
+                selected_topics: withMandatoryTechnicalTopics([question?.topic || contextTopicsWithTechnical[0] || 'General']),
+                count: 1,
+                difficulty_hint: difficultyHint,
+                previous_answer: answerForContext,
+                audio_metrics: req.body.voiceMetrics || null,
+                conversation_history: conversationHistory,
+                asked_questions: askedQuestions,
+                diversity_nonce: `${sessionId}-${Date.now()}`
+            });
+
+            const newQuestions = contextualResponse.data?.questions || [];
+            if (newQuestions.length > 0) {
+                const q = newQuestions[0];
+                // Insert next prompt linked to session
+                const { data: insertedQ, error: insError } = await supabase
+                    .from('questions')
+                    .insert([{
+                        ...q,
+                        session_id: sessionId,
+                        difficulty_level: Math.max(1, Math.min(5, Number(q.difficulty_level) || 3)),
+                        ideal_answer_keywords: Array.isArray(q.ideal_answer_keywords) ? q.ideal_answer_keywords : []
+                    }])
+                    .select()
+                    .single();
+
+                if (!insError) {
+                    nextQuestion = insertedQ;
+
+                    // Synthesize speech for the next prompt
+                    try {
+                        const ttsResponse = await axios.post(
+                            `${ML_SERVICE_URL}/synthesize_speech`,
+                            null,
+                            {
+                                params: {
+                                    text: nextQuestion.question_text,
+                                    voice: "female_friendly"
+                                }
+                            }
+                        );
+                        nextQuestion.audio_base64 = ttsResponse.data.audio_base64;
+                    } catch (ttsErr) {
+                        console.error("TTS synthesis failed for next question:", ttsErr);
                     }
                 }
             }
@@ -280,7 +391,12 @@ router.post('/answer', authenticate, async (req: AuthRequest, res) => {
         res.json({ answer, evaluation: mlResponse, next_question: nextQuestion });
 
     } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error("POST /interviews/answer failed:", error);
+        res.status(500).json({
+            error: error?.message || "Failed to submit answer",
+            details: error?.details || null,
+            hint: error?.hint || null
+        });
     }
 });
 
@@ -358,8 +474,38 @@ router.get('/:sessionId/report', authenticate, async (req: AuthRequest, res) => 
             .order('created_at', { ascending: true });
 
         if (qError) throw qError;
+        const normalizedQuestions = (questions || []).map((q: any) => {
+            const sortedAnswers = [...(q.answers || [])].sort((a: any, b: any) => {
+                const aTs = new Date(a.created_at || 0).getTime();
+                const bTs = new Date(b.created_at || 0).getTime();
+                return bTs - aTs;
+            });
+            return {
+                ...q,
+                answers: sortedAnswers
+            };
+        });
 
-        res.json({ session, questions });
+        const qa_history = normalizedQuestions.map((q: any, index: number) => {
+            const latestAnswer = q.answers?.[0] || null;
+            const latestScore = latestAnswer?.ai_scores?.[0] || null;
+            const latestText = String(latestAnswer?.answer_text || '').trim();
+            return {
+                order: index + 1,
+                question_id: q.id,
+                question_text: q.question_text,
+                topic: q.topic,
+                difficulty_level: q.difficulty_level,
+                asked_at: q.created_at || null,
+                attempts: (q.answers || []).length,
+                latest_answer_text: latestText || null,
+                latest_answer_created_at: latestAnswer?.created_at || null,
+                skipped: latestText.startsWith(SKIP_ANSWER_MARKER),
+                latest_score: latestScore
+            };
+        });
+
+        res.json({ session, questions: normalizedQuestions, qa_history });
     } catch (error: any) {
         res.status(500).json({ error: error.message });
     }

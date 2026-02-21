@@ -12,3 +12,5 @@ numpy==1.26.0
 pydub==0.25.1
 pdfminer.six==20221105
 python-dotenv
+edge-tts==7.2.7
+deepgram-sdk==3.2.0

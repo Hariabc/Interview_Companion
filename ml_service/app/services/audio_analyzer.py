@@ -20,6 +20,7 @@ import numpy as np
 import io
 from pydub import AudioSegment
 from pydub.utils import which
+from app.services.stt_service import transcribe_audio
 
 # Configure FFmpeg path for pydub (Windows compatibility)
 if os.name == 'nt':  # Windows
@@ -96,11 +97,12 @@ def convert_to_wav(audio_source):
         print(f"Error converting audio to WAV: {e}")
         return None
 
-def analyze_audio_file(audio_source):
+def analyze_audio_file(audio_source, existing_transcript=None):
     """
     Analyzes an audio file to extract transcript and acoustic metrics.
     Returns a dictionary with transcript, wpm, silence_duration, etc.
     """
+    print(f"DEBUG: analyze_audio_file called with existing_transcript: {existing_transcript is not None}")
     results = {
         "transcript": "",
         "wpm": 0,
@@ -109,7 +111,9 @@ def analyze_audio_file(audio_source):
         "pitch_variance": 0,
         "volume_consistency": 0,
         "fluency_score": 0,
-        "confidence_score": 0
+        "confidence_score": 0,
+        "emotion": "neutral",
+        "gaps": []
     }
 
     # Convert audio to WAV format first
@@ -118,38 +122,46 @@ def analyze_audio_file(audio_source):
         print("Failed to convert audio to WAV format")
         return results
 
-    # 1. Transcription with Vosk
-    if model:
+    # 1. Transcription (Prefer existing, then Deepgram, then Vosk)
+    if existing_transcript:
+        results["transcript"] = existing_transcript
+    else:
+        transcript_result = None
         try:
+            # We need the audio bytes for Deepgram
             wav_source.seek(0)
-            wf = wave.open(wav_source, "rb")
-        except (wave.Error, EOFError) as e:
-            print(f"Wave open failed after conversion: {e}")
-            wf = None
+            audio_bytes = wav_source.read()
+            transcript_result = transcribe_audio(audio_bytes)
             
-        if wf and (wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getcomptype() != "NONE"):
-            # Handle format mismatch
-            pass # VOSK might fail or warn
+            if transcript_result and transcript_result.get("transcript"):
+                results["transcript"] = transcript_result["transcript"]
+                results["confidence_score"] = round(transcript_result.get("confidence", 0) * 10, 1)
+        except Exception as e:
+            print(f"Deepgram transcription failed: {e}")
+
+        # Fallback to Vosk if Deepgram failed and Vosk is available
+        if not results["transcript"] and model:
+            try:
+                wav_source.seek(0)
+                wf = wave.open(wav_source, "rb")
+                rec = vosk.KaldiRecognizer(model, wf.getframerate())
+                rec.SetWords(True)
         
-        if wf:
-            rec = vosk.KaldiRecognizer(model, wf.getframerate())
-            rec.SetWords(True)
-    
-            transcript_parts = []
-            while True:
-                data = wf.readframes(4000)
-                if len(data) == 0:
-                    break
-                if rec.AcceptWaveform(data):
-                    part = json.loads(rec.Result())
-                    transcript_parts.append(part.get("text", ""))
-            
-            final_part = json.loads(rec.FinalResult())
-            transcript_parts.append(final_part.get("text", ""))
-            results["transcript"] = " ".join([t for t in transcript_parts if t])
-            # wf.close() # Don't close if it's a file-like object we need later? 
-            # wave.open(file_object) does not close file object on close().
-            wf.close() 
+                transcript_parts = []
+                while True:
+                    data = wf.readframes(4000)
+                    if len(data) == 0:
+                        break
+                    if rec.AcceptWaveform(data):
+                        part = json.loads(rec.Result())
+                        transcript_parts.append(part.get("text", ""))
+                
+                final_part = json.loads(rec.FinalResult())
+                transcript_parts.append(final_part.get("text", ""))
+                results["transcript"] = " ".join([t for t in transcript_parts if t])
+                wf.close()
+            except Exception as e:
+                print(f"Vosk fallback failed: {e}")
 
     # 2. Acoustic Analysis with Librosa
     try:
@@ -196,14 +208,51 @@ def analyze_audio_file(audio_source):
         fluency -= (filler_count * 0.5)
         results["fluency_score"] = max(0, min(10, round(fluency, 1)))
         
-        # Confidence Score:
-        # Base 10. Penalize for too much silence (>20% of time). Penalize for low volume consistency.
-        confidence = 10
-        silence_ratio = results["pause_duration"] / duration if duration > 0 else 0
-        if silence_ratio > 0.2: confidence -= (silence_ratio * 10) # Heavy penalty for silence
-        if results["volume_consistency"] < 0.8: confidence -= 1
-        if results["wpm"] < 80: confidence -= 2
-        results["confidence_score"] = max(0, min(10, round(confidence, 1)))
+        # Confidence Score Adjustment:
+        # Include acoustic stability if not already set by transcription confidence
+        if results["confidence_score"] == 0:
+            confidence = 10
+            silence_ratio = results["pause_duration"] / duration if duration > 0 else 0
+            if silence_ratio > 0.2: confidence -= (silence_ratio * 10) # Heavy penalty for silence
+            if results["volume_consistency"] < 0.8: confidence -= 1
+            if results["wpm"] < 80: confidence -= 2
+            results["confidence_score"] = max(0, min(10, round(confidence, 1)))
+
+        # 5. Emotion Analysis (Basic Heuristics)
+        # Low pitch variance + low volume + high silence = nervous/monotone
+        # High pitch variance + high volume = energetic
+        # Medium = calm/professional
+        if results["pitch_variance"] > 300 and results["volume_consistency"] > 0.8:
+            results["emotion"] = "energetic"
+        elif silence_ratio > 0.3 or results["pitch_variance"] < 50:
+            results["emotion"] = "hesitant"
+        else:
+            results["emotion"] = "calm"
+
+        # 6. Gap Analysis (Detailed)
+        # Find silence intervals longer than 0.5 seconds
+        silent_intervals = []
+        last_end = 0
+        for start, end in non_silent_intervals:
+            gap_duration = (start - last_end) / sr
+            if gap_duration > 0.5:
+                silent_intervals.append({
+                    "start": round(last_end / sr, 2),
+                    "end": round(start / sr, 2),
+                    "duration": round(gap_duration, 2)
+                })
+            last_end = end
+        
+        # Add trailing gap if any
+        trailing_gap = (len(y) - last_end) / sr
+        if trailing_gap > 0.5:
+            silent_intervals.append({
+                "start": round(last_end / sr, 2),
+                "end": round(len(y) / sr, 2),
+                "duration": round(trailing_gap, 2)
+            })
+            
+        results["gaps"] = silent_intervals
 
     except Exception as e:
         print(f"Error in acoustic analysis: {e}")

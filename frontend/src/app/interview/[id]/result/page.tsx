@@ -52,10 +52,10 @@ export default function InterviewResult() {
         completeSession();
     }, [params.id]);
 
-    if (loading) return <div className="text-white bg-gray-950 h-screen flex justify-center items-center">Generating Report...</div>;
+    if (loading) return <div className="app-shell text-white h-screen flex justify-center items-center">Generating Report...</div>;
 
     return (
-        <div className="min-h-screen bg-gray-950 text-white p-8 mb-20">
+        <div className="app-shell text-white p-8 mb-20">
             <div className="max-w-4xl mx-auto space-y-8">
                 <header className="text-center">
                     <h1 className="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-blue-500 mb-2">
@@ -66,7 +66,7 @@ export default function InterviewResult() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                     {/* Score Card */}
-                    <div className="bg-gray-900 p-8 rounded-3xl border border-gray-800 flex flex-col items-center justify-center">
+                    <div className="glass-card p-8 rounded-3xl flex flex-col items-center justify-center">
                         <h2 className="text-xl font-medium text-gray-400 mb-6">Overall Score</h2>
                         <div className="text-8xl font-bold text-white mb-4">{results.total_score}</div>
                         <div className="h-48 w-full">
@@ -99,7 +99,7 @@ export default function InterviewResult() {
 
                     {/* Insights */}
                     <div className="space-y-6">
-                        <div className="bg-gray-900 p-6 rounded-2xl border border-gray-800">
+                        <div className="glass-card p-6 rounded-2xl">
                             <h3 className="text-lg font-bold text-orange-400 mb-4 flex items-center gap-2">
                                 <AlertTriangle size={20} /> Weak Areas
                             </h3>
@@ -112,7 +112,7 @@ export default function InterviewResult() {
                             </div>
                         </div>
 
-                        <div className="bg-gray-900 p-6 rounded-2xl border border-gray-800">
+                        <div className="glass-card p-6 rounded-2xl">
                             <h3 className="text-lg font-bold text-blue-400 mb-4 flex items-center gap-2">
                                 <BookOpen size={20} /> Improvement Plan
                             </h3>
@@ -131,11 +131,11 @@ export default function InterviewResult() {
                 <div className="flex justify-center gap-4">
                     <button
                         onClick={() => router.push('/dashboard')}
-                        className="px-8 py-3 bg-gray-800 hover:bg-gray-700 rounded-xl font-medium transition"
+                        className="ghost-btn px-8 py-3 font-medium"
                     >
                         Back to Dashboard
                     </button>
-                    <button className="px-8 py-3 bg-blue-600 hover:bg-blue-500 rounded-xl font-medium transition flex items-center gap-2" onClick={() => router.push(`/interview/report/${params.id}`)}>
+                    <button className="brand-btn px-8 py-3 font-medium flex items-center gap-2" onClick={() => router.push(`/interview/report/${params.id}`)}>
                         <FileText size={18} /> View Detailed Report
                     </button>
                 </div>

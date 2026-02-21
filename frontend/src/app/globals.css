@@ -3,25 +3,169 @@
 @tailwind utilities;
 
 :root {
-  --foreground-rgb: 0, 0, 0;
-  --background-start-rgb: 214, 219, 220;
-  --background-end-rgb: 255, 255, 255;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --foreground-rgb: 255, 255, 255;
-    --background-start-rgb: 0, 0, 0;
-    --background-end-rgb: 0, 0, 0;
-  }
+  --bg-base: #070d1a;
+  --bg-elev: #0f172a;
+  --bg-elev-2: #111f3b;
+  --text-main: #e5ecff;
+  --text-subtle: #9fb0d8;
+  --brand: #4f86ff;
+  --brand-2: #22d3ee;
+  --ring: rgba(95, 131, 230, 0.45);
 }
 
 body {
-  color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-      to bottom,
-      transparent,
-      rgb(var(--background-end-rgb))
-    )
-    rgb(var(--background-start-rgb));
+  color: var(--text-main);
+  background:
+    radial-gradient(circle at 8% -10%, rgba(79, 134, 255, 0.28), transparent 40%),
+    radial-gradient(circle at 92% 0%, rgba(34, 211, 238, 0.17), transparent 32%),
+    linear-gradient(180deg, #081022 0%, #050914 52%, #04070f 100%);
+  min-height: 100vh;
+}
+
+::selection {
+  background: rgba(96, 165, 250, 0.35);
+  color: #f8fbff;
+}
+
+@layer components {
+  .app-shell {
+    min-height: 100vh;
+    color: var(--text-main);
+  }
+
+  .glass-card {
+    border-radius: 1rem;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(15, 23, 42, 0.55);
+    backdrop-filter: blur(10px);
+    box-shadow: 0 20px 80px -40px rgba(56, 189, 248, 0.45);
+  }
+
+  .section-title {
+    font-size: 1.5rem;
+    line-height: 2rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  @media (min-width: 768px) {
+    .section-title {
+      font-size: 1.875rem;
+      line-height: 2.25rem;
+    }
+  }
+
+  .subtle-text {
+    color: var(--text-subtle);
+  }
+
+  .brand-btn {
+    @apply inline-flex items-center justify-center rounded-xl px-4 py-2.5 font-medium transition;
+    background: linear-gradient(135deg, var(--brand) 0%, #2f6df6 58%, var(--brand-2) 100%);
+    color: #f8fbff;
+  }
+
+  .brand-btn:hover {
+    filter: brightness(1.06);
+    transform: translateY(-1px);
+  }
+
+  .ghost-btn {
+    @apply inline-flex items-center justify-center rounded-xl px-4 py-2.5 font-medium border border-white/15 bg-white/5 text-slate-100 transition hover:bg-white/10;
+  }
+
+  .pill {
+    @apply inline-flex items-center rounded-full border border-cyan-300/25 bg-cyan-400/10 px-3 py-1 text-xs text-cyan-100;
+  }
+}
+
+/* Conversation Phase Animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.6s ease-out;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes panelIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes livePulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(34, 211, 238, 0);
+  }
+}
+
+.animate-panel-in {
+  animation: panelIn 420ms ease-out both;
+}
+
+.animate-live-pulse {
+  animation: livePulse 1600ms ease-in-out infinite;
+}
+
+@keyframes voiceBar {
+  0%, 100% {
+    transform: scaleY(0.35);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+.voice-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 14px;
+}
+
+.voice-bar {
+  width: 3px;
+  height: 100%;
+  border-radius: 999px;
+  transform-origin: bottom;
+  animation: voiceBar 900ms ease-in-out infinite;
+}
+
+.voice-bar:nth-child(2) {
+  animation-delay: 120ms;
+}
+
+.voice-bar:nth-child(3) {
+  animation-delay: 240ms;
+}
+
+.voice-bar:nth-child(4) {
+  animation-delay: 360ms;
 }

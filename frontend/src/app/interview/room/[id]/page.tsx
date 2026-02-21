@@ -1,12 +1,13 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import axios from 'axios';
 import AudioRecorder from '@/components/AudioRecorder';
-import { Mic, Send, MessageSquare } from 'lucide-react';
+import ConversationPhase from '@/components/ConversationPhase';
+import { Mic, Send, MessageSquare, Volume2 } from 'lucide-react';
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3000';
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001';
 
 export default function InterviewRoom() {
     const params = useParams();
@@ -19,8 +20,12 @@ export default function InterviewRoom() {
     const [mode, setMode] = useState<'text' | 'audio'>('audio');
     const [textAnswer, setTextAnswer] = useState('');
     const [feedback, setFeedback] = useState<any>(null);
+    const [conversationPhase, setConversationPhase] = useState(true);
+    const [userName, setUserName] = useState<string | null>(null);
 
     const [sessionToken, setSessionToken] = useState<string | null>(null);
+    const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+    const audioRef = useRef<HTMLAudioElement | null>(null);
 
     useEffect(() => {
         const fetchSession = async () => {
@@ -38,6 +43,11 @@ export default function InterviewRoom() {
                 if (response.data.questions) {
                     setQuestions(response.data.questions);
                 }
+
+                // Check if we're in conversation phase
+                if (response.data.session?.conversation_phase === false) {
+                    setConversationPhase(false);
+                }
             } catch (error) {
                 console.error("Error fetching session:", error);
             }
@@ -45,6 +55,30 @@ export default function InterviewRoom() {
 
         fetchSession();
     }, [sessionId]);
+
+    useEffect(() => {
+        if (questions[currentQIndex]?.audio_base64) {
+            playAudioFromBase64(questions[currentQIndex].audio_base64);
+        }
+    }, [currentQIndex, questions]);
+
+    const playAudioFromBase64 = (base64Audio: string) => {
+        try {
+            if (audioRef.current) {
+                audioRef.current.pause();
+            }
+            const audio = new Audio(`data:audio/mp3;base64,${base64Audio}`);
+            audioRef.current = audio;
+
+            audio.onplay = () => setIsPlayingAudio(true);
+            audio.onended = () => setIsPlayingAudio(false);
+            audio.onerror = () => setIsPlayingAudio(false);
+
+            audio.play().catch(err => console.error('Audio play failed:', err));
+        } catch (err) {
+            console.error('Audio playback error:', err);
+        }
+    };
 
     const handleVoiceAnalysisComplete = async (analysisData: any) => {
         setLoading(true);
@@ -96,6 +130,12 @@ export default function InterviewRoom() {
         }
     };
 
+    const handleConversationComplete = (generatedQuestions: any[]) => {
+        setQuestions(generatedQuestions);
+        setConversationPhase(false);
+        setCurrentQIndex(0);
+    };
+
     const nextQuestion = () => {
         setFeedback(null);
         setTextAnswer('');
@@ -105,6 +145,19 @@ export default function InterviewRoom() {
             router.push(`/interview/room/${sessionId}/result`);
         }
     };
+
+    // Show conversation phase first
+    if (conversationPhase) {
+        return (
+            <ConversationPhase
+                sessionId={sessionId as string}
+                sessionToken={sessionToken || ''}
+                userName={userName || undefined}
+                selectedTopics={[]}
+                onConversationComplete={handleConversationComplete}
+            />
+        );
+    }
 
     const currentQuestion = questions[currentQIndex];
 
@@ -125,6 +178,11 @@ export default function InterviewRoom() {
                     <h2 className="text-2xl md:text-3xl font-bold leading-relaxed z-10">
                         {currentQuestion?.question_text || "Loading question..."}
                     </h2>
+                    {isPlayingAudio && (
+                        <div className="absolute bottom-4 right-4 text-blue-400 animate-pulse">
+                            <Volume2 size={24} />
+                        </div>
+                    )}
                 </div>
 
                 {/* Answer Panel */}

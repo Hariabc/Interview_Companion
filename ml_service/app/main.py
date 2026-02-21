@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import shutil
@@ -8,8 +9,25 @@ from app.services.scorer import score_answer_text
 from app.services.audio_analyzer import analyze_audio_file
 from app.services.adaptive import suggest_next_difficulty
 from app.services.generator import generate_interview_questions
+from app.services.conversation_service import (
+    generate_ai_introduction,
+    analyze_user_introduction,
+    generate_contextual_questions
+)
+from app.services.stt_service import transcribe_audio, transcribe_audio_url
+from app.services.tts_service import synthesize_speech
+from app.services.code_review_service import analyze_code_submission
+from app.services.coding_challenge_service import generate_personalized_coding_challenge
 
 app = FastAPI(title="AI Interview ML Service")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class ScoreRequest(BaseModel):
     answer_text: Optional[str] = None
@@ -52,18 +70,21 @@ async def score_answer(request: ScoreRequest):
     
     if request.audio_url:
         # In a real app, download file from URL. 
-        # For this prototype, we assume it might be a local path or we skip download
-        # and just mock the transcription hook or implement basic download.
-        # Here we will assume the ML service can access the file or it's passed as base64 (not implemented here for brevity)
-        # For simplicity in this artifact, we'll error if it's a URL requiring auth/download without that logic.
-        # But we can try to handle it if it's a public URL.
-        
-        # Mocking transcription for the scope of this file to avoid complex networking code here
-        # In production: download_audio(request.audio_url) -> analyze_audio_file
-        transcript = "This is a placeholder transcript for audio." 
-        audio_metrics = {"wpm": 120, "fillers": 2, "pause_duration": 0.5}
-        
-        # If we had a file upload endpoint for audio, we'd use analyze_audio_file
+        # For this prototype, we'll try to use the stt_service to get the transcript 
+        # then pass it to audio_analyzer if we had the file.
+        # Since we don't have download logic here yet, we'll use transcribe_audio_url
+        try:
+            stt_result = transcribe_audio_url(request.audio_url)
+            transcript = stt_result.get("transcript", "")
+            # We can't do acoustic analysis on a URL easily without downloading it.
+            # For now, we return the transcript and basic metrics from STT
+            audio_metrics = {
+                "confidence": stt_result.get("confidence", 0),
+                "words_count": stt_result.get("words_count", 0)
+            }
+        except Exception as e:
+            print(f"Error transcribing audio URL: {e}")
+            transcript = "[Transcription error]"
     
     final_text = request.answer_text if request.answer_text else transcript
     
@@ -101,3 +122,161 @@ def suggest_difficulty(request: DifficultyRequest):
 def generate_questions(params: QuestionParams):
     questions = generate_interview_questions(params.resume_text, params.topics)
     return {"questions": questions}
+
+# ============ CONVERSATION ENDPOINTS ============
+
+class ConversationStartRequest(BaseModel):
+    user_name: Optional[str] = None
+
+class UserIntroAnalysisRequest(BaseModel):
+    user_intro_text: str
+    resume_text: Optional[str] = None
+
+class ContextualQuestionsRequest(BaseModel):
+    user_intro_analysis: dict
+    resume_text: Optional[str] = None
+    selected_topics: Optional[List[str]] = None
+    count: int = 3
+    difficulty_hint: Optional[int] = None
+    previous_answer: Optional[str] = None
+    audio_metrics: Optional[dict] = None
+    conversation_history: Optional[List[dict]] = None
+    asked_questions: Optional[List[str]] = None
+    diversity_nonce: Optional[str] = None
+
+class TranscribeRequest(BaseModel):
+    audio_url: Optional[str] = None
+
+class CodeSubmissionRequest(BaseModel):
+    challenge_title: str
+    challenge_prompt: str
+    language: str
+    code: str
+    passed_count: int
+    total_count: int
+    run_results: List[dict]
+    user_transcript: Optional[str] = None
+
+class GenerateCodingChallengeRequest(BaseModel):
+    resume_text: Optional[str] = None
+    topics: Optional[List[str]] = None
+    mentioned_skills: Optional[List[str]] = None
+    user_summary: Optional[str] = None
+    round: int = 1
+
+@app.post("/conversation/start")
+def start_conversation(request: ConversationStartRequest):
+    """Generate AI introduction and synthesize to speech"""
+    try:
+        # Generate introduction text
+        intro_text = generate_ai_introduction(request.user_name)
+        
+        # Synthesize to speech
+        tts_result = synthesize_speech(
+            text=intro_text,
+            voice="female_friendly",
+            output_filename=f"ai_intro_{request.user_name or 'user'}"
+        )
+        
+        if not tts_result.get("audio_base64"):
+            error_msg = tts_result.get("error", "TTS synthesis failed")
+            print(f"ERROR: /conversation/start failed: {error_msg}")
+            raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {error_msg}")
+
+        return {
+            "intro_text": intro_text,
+            "audio_path": tts_result["audio_path"],
+            "audio_base64": tts_result["audio_base64"],
+            "voice_used": tts_result["voice_used"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/conversation/analyze_user_intro")
+def analyze_user_intro(request: UserIntroAnalysisRequest):
+    """Analyze user's introduction to extract topics and context"""
+    try:
+        analysis = analyze_user_introduction(
+            user_intro_text=request.user_intro_text,
+            resume_text=request.resume_text
+        )
+        return analysis
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/conversation/generate_contextual_questions")
+def generate_contextual_qs(request: ContextualQuestionsRequest):
+    """Generate questions based on conversation context and resume"""
+    try:
+        questions = generate_contextual_questions(
+            user_intro_analysis=request.user_intro_analysis,
+            resume_text=request.resume_text,
+            selected_topics=request.selected_topics,
+            count=request.count,
+            difficulty_hint=request.difficulty_hint,
+            previous_answer=request.previous_answer,
+            audio_metrics=request.audio_metrics,
+            conversation_history=request.conversation_history,
+            asked_questions=request.asked_questions,
+            diversity_nonce=request.diversity_nonce
+        )
+        return {"questions": questions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/transcribe_audio")
+async def transcribe_audio_endpoint(file: UploadFile = File(...)):
+    """Transcribe audio file to text using Deepgram"""
+    try:
+        # Read file content
+        audio_bytes = await file.read()
+        
+        # Transcribe
+        result = transcribe_audio(audio_bytes)
+        
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/transcribe_audio_url")
+def transcribe_url_endpoint(request: TranscribeRequest):
+    """Transcribe audio from URL using Deepgram"""
+    try:
+        if not request.audio_url:
+            raise HTTPException(status_code=400, detail="audio_url is required")
+        
+        result = transcribe_audio_url(request.audio_url)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/synthesize_speech")
+def synthesize_speech_endpoint(text: str, voice: str = "female_friendly"):
+    """Convert text to speech using Edge TTS"""
+    try:
+        result = synthesize_speech(text=text, voice=voice)
+        if not result.get("audio_base64"):
+            error_msg = result.get("error", "TTS synthesis failed")
+            print(f"ERROR: /synthesize_speech failed: {error_msg}")
+            raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {error_msg}")
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/coding/analyze_submission")
+def analyze_code_submission_endpoint(request: CodeSubmissionRequest):
+    """Analyze coding submission and provide feedback with complexity suggestions"""
+    try:
+        result = analyze_code_submission(request.model_dump())
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/coding/generate_challenge")
+def generate_coding_challenge_endpoint(request: GenerateCodingChallengeRequest):
+    """Generate a personalized coding challenge based on resume/topics/context."""
+    try:
+        result = generate_personalized_coding_challenge(request.model_dump())
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

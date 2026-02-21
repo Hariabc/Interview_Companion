@@ -50,7 +50,7 @@ export default function InterviewResult() {
 
     if (loading) {
         return (
-            <div className="min-h-screen bg-gray-950 text-white flex items-center justify-center">
+            <div className="app-shell text-white flex items-center justify-center">
                 <div className="animate-spin h-10 w-10 border-4 border-blue-500 rounded-full border-t-transparent"></div>
             </div>
         );
@@ -58,12 +58,20 @@ export default function InterviewResult() {
 
     if (!report) {
         return (
-            <div className="min-h-screen bg-gray-950 text-white flex flex-col items-center justify-center gap-4">
+            <div className="app-shell text-white flex flex-col items-center justify-center gap-4">
                 <p className="text-xl text-red-400">Failed to load report.</p>
                 <Link href="/dashboard" className="text-blue-400 hover:underline">Return to Dashboard</Link>
             </div>
         );
     }
+
+    const codingRound = report.coding_round || null;
+    const qaHistory = Array.isArray(report.qa_history) ? report.qa_history : [];
+    const getLatestAnswer = (item: any) => {
+        const answers = Array.isArray(item?.answers) ? [...item.answers] : [];
+        answers.sort((a: any, b: any) => new Date(b?.created_at || 0).getTime() - new Date(a?.created_at || 0).getTime());
+        return answers[0] || null;
+    };
 
     // Calculate Stats
     const totalQuestions = report.questions.length;
@@ -76,8 +84,9 @@ export default function InterviewResult() {
     let count = 0;
 
     report.questions.forEach((q: any) => {
-        if (q.answers.length > 0 && q.answers[0].ai_scores.length > 0) {
-            const score = q.answers[0].ai_scores[0];
+        const answer = getLatestAnswer(q);
+        if (answer && answer.ai_scores?.length > 0) {
+            const score = answer.ai_scores[0];
             totalScore += score.final_score || 0;
             totalSemantic += score.semantic_score || 0;
             totalGrammar += score.grammar_score || 0;
@@ -96,14 +105,14 @@ export default function InterviewResult() {
     }
 
     return (
-        <div className="min-h-screen bg-gray-950 text-white p-6 md:p-12">
+        <div className="app-shell text-white p-6 md:p-12">
             <div className="max-w-5xl mx-auto">
                 <Link href="/dashboard" className="flex items-center gap-2 text-gray-400 hover:text-white mb-8 transition">
                     <ArrowLeft size={20} /> Back to Dashboard
                 </Link>
 
                 {/* Header Stats */}
-                <div className="bg-gray-900 rounded-3xl p-8 mb-8 border border-gray-800 flex flex-col md:flex-row justify-between items-center gap-6">
+                <div className="glass-card rounded-3xl p-8 mb-8 flex flex-col md:flex-row justify-between items-center gap-6">
                     <div>
                         <h1 className="text-3xl font-bold mb-2">Interview Report</h1>
                         <p className="text-gray-400 font-mono text-sm">Session ID: {sessionId}</p>
@@ -135,13 +144,57 @@ export default function InterviewResult() {
                 </div>
 
                 {/* Detailed Breakdown */}
+                {codingRound && (
+                    <div className="glass-card mb-6 rounded-2xl p-6">
+                        <h2 className="text-lg font-semibold mb-3">Coding Round</h2>
+                        <p className="text-sm text-gray-300 mb-3">{codingRound.title || 'Coding Challenge'}</p>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                            <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                                <p className="text-gray-400">Language</p>
+                                <p className="text-gray-100 font-medium">{codingRound.language || '-'}</p>
+                            </div>
+                            <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                                <p className="text-gray-400">Result</p>
+                                <p className="text-gray-100 font-medium">{codingRound.passed}/{codingRound.total} passed</p>
+                            </div>
+                            <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                                <p className="text-gray-400">Status</p>
+                                <p className={`font-medium ${codingRound.all_passed ? 'text-emerald-300' : 'text-amber-300'}`}>
+                                    {codingRound.all_passed ? 'All tests passed' : 'Needs improvement'}
+                                </p>
+                            </div>
+                        </div>
+                        {codingRound.feedback?.summary && (
+                            <div className="mt-4 bg-emerald-900/10 border border-emerald-900/30 p-4 rounded-xl">
+                                <p className="text-emerald-200 text-sm italic">"{codingRound.feedback.summary}"</p>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {qaHistory.length > 0 && (
+                    <div className="glass-card mb-6 rounded-2xl p-6">
+                        <h2 className="text-lg font-semibold mb-3">Question Flow</h2>
+                        <div className="space-y-2 text-sm">
+                            {qaHistory.map((item: any) => (
+                                <div key={item.question_id} className="rounded-lg border border-white/10 bg-white/5 p-3">
+                                    <p className="text-slate-100">{item.order}. {item.question_text}</p>
+                                    <p className="text-slate-400 mt-1">
+                                        Attempts: {item.attempts} | {item.skipped ? 'Skipped' : (item.latest_answer_text ? 'Answered' : 'No answer')}
+                                    </p>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
                 <div className="space-y-6">
                     {report.questions.map((item: any, idx: number) => {
-                        const answer = item.answers[0];
+                        const answer = getLatestAnswer(item);
                         const score = answer?.ai_scores[0];
 
                         return (
-                            <div key={item.id} className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden hover:border-gray-700 transition">
+                            <div key={item.id} className="glass-card rounded-2xl overflow-hidden hover:border-white/20 transition">
                                 {/* Question Header */}
                                 <div className="bg-gray-800/50 p-6 flex justify-between items-start">
                                     <div className="flex gap-4">

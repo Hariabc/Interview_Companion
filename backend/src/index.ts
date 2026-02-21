@@ -30,12 +30,16 @@ import interviewRoutes from './routes/interviewRoutes';
 import resumeRoutes from './routes/resumeRoutes';
 import dashboardRoutes from './routes/dashboardRoutes';
 import voiceRoutes from './routes/voiceRoutes';
+import conversationRoutes from './routes/conversationRoutes';
+import codingRoutes from './routes/codingRoutes';
 
 app.use('/auth', authRoutes);
 app.use('/interviews', interviewRoutes);
 app.use('/resume', resumeRoutes);
 app.use('/dashboard', dashboardRoutes);
 app.use('/voice', voiceRoutes);
+app.use('/conversation', conversationRoutes);
+app.use('/coding', codingRoutes);
 // app.use('/dashboard', dashboardRoutes);
 
 app.get('/', (req: Request, res: Response) => {

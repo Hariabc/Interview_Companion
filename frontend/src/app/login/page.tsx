@@ -2,6 +2,8 @@
 import { useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+import { ArrowLeft, LockKeyhole, Mail } from 'lucide-react';
 
 export default function Login() {
     const [email, setEmail] = useState('');
@@ -16,17 +18,11 @@ export default function Login() {
 
         try {
             if (isSignUp) {
-                const { error } = await supabase.auth.signUp({
-                    email,
-                    password,
-                });
+                const { error } = await supabase.auth.signUp({ email, password });
                 if (error) throw error;
-                alert('Check your email for the confirmation link!');
+                alert('Check your email for the confirmation link.');
             } else {
-                const { error } = await supabase.auth.signInWithPassword({
-                    email,
-                    password,
-                });
+                const { error } = await supabase.auth.signInWithPassword({ email, password });
                 if (error) throw error;
                 router.push('/dashboard');
             }
@@ -38,57 +34,66 @@ export default function Login() {
     };
 
     return (
-        <div className="flex min-h-screen items-center justify-center bg-gray-950 px-4">
-            <div className="w-full max-w-md space-y-8 rounded-xl bg-gray-900 p-8 shadow-2xl border border-gray-800">
-                <div>
-                    <h2 className="mt-6 text-center text-3xl font-extrabold text-white">
-                        {isSignUp ? 'Create an account' : 'Sign in to your account'}
-                    </h2>
-                </div>
-                <form className="mt-8 space-y-6" onSubmit={handleAuth}>
-                    <div className="-space-y-px rounded-md shadow-sm">
-                        <div>
+        <div className="app-shell flex min-h-screen items-center justify-center px-4 py-12">
+            <div className="absolute left-5 top-5">
+                <Link href="/" className="ghost-btn gap-2 text-sm">
+                    <ArrowLeft size={15} />
+                    Back
+                </Link>
+            </div>
+
+            <div className="glass-card w-full max-w-md p-8">
+                <p className="pill mb-4">Secure Access</p>
+                <h1 className="mb-2 text-3xl font-semibold" style={{ fontFamily: 'var(--font-space-grotesk), sans-serif' }}>
+                    {isSignUp ? 'Create your account' : 'Welcome back'}
+                </h1>
+                <p className="subtle-text mb-7 text-sm">
+                    {isSignUp ? 'Create your profile and start practicing interviews.' : 'Sign in to continue your interview preparation.'}
+                </p>
+
+                <form onSubmit={handleAuth} className="space-y-4">
+                    <label className="block">
+                        <span className="mb-1.5 block text-xs text-slate-300">Email</span>
+                        <div className="flex items-center gap-2 rounded-xl border border-white/15 bg-slate-900/65 px-3">
+                            <Mail size={16} className="text-slate-400" />
                             <input
                                 type="email"
                                 required
-                                className="relative block w-full rounded-t-md border-0 py-3 px-3 bg-gray-800 text-white ring-1 ring-inset ring-gray-700 placeholder:text-gray-400 focus:z-10 focus:ring-2 focus:ring-inset focus:ring-blue-600 sm:text-sm sm:leading-6"
-                                placeholder="Email address"
+                                placeholder="name@example.com"
                                 value={email}
                                 onChange={(e) => setEmail(e.target.value)}
+                                className="w-full bg-transparent py-3 text-sm text-white outline-none placeholder:text-slate-500"
                             />
                         </div>
-                        <div>
+                    </label>
+
+                    <label className="block">
+                        <span className="mb-1.5 block text-xs text-slate-300">Password</span>
+                        <div className="flex items-center gap-2 rounded-xl border border-white/15 bg-slate-900/65 px-3">
+                            <LockKeyhole size={16} className="text-slate-400" />
                             <input
                                 type="password"
                                 required
-                                className="relative block w-full rounded-b-md border-0 py-3 px-3 bg-gray-800 text-white ring-1 ring-inset ring-gray-700 placeholder:text-gray-400 focus:z-10 focus:ring-2 focus:ring-inset focus:ring-blue-600 sm:text-sm sm:leading-6"
-                                placeholder="Password"
+                                placeholder="Enter password"
                                 value={password}
                                 onChange={(e) => setPassword(e.target.value)}
+                                className="w-full bg-transparent py-3 text-sm text-white outline-none placeholder:text-slate-500"
                             />
                         </div>
-                    </div>
+                    </label>
 
-                    <div>
-                        <button
-                            type="submit"
-                            disabled={loading}
-                            className="group relative flex w-full justify-center rounded-md bg-blue-600 px-3 py-3 text-sm font-semibold text-white hover:bg-blue-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 disabled:opacity-50"
-                        >
-                            {loading ? 'Processing...' : (isSignUp ? 'Sign up' : 'Sign in')}
-                        </button>
-                    </div>
-
-                    <div className="text-center">
-                        <button
-                            type="button"
-                            onClick={() => setIsSignUp(!isSignUp)}
-                            className="text-sm text-blue-400 hover:text-blue-300"
-                        >
-                            {isSignUp ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
-                        </button>
-                    </div>
+                    <button type="submit" disabled={loading} className="brand-btn w-full">
+                        {loading ? 'Processing...' : isSignUp ? 'Create Account' : 'Sign In'}
+                    </button>
                 </form>
+
+                <button
+                    type="button"
+                    onClick={() => setIsSignUp((prev) => !prev)}
+                    className="mt-5 w-full text-sm text-cyan-200 transition hover:text-cyan-100"
+                >
+                    {isSignUp ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
+                </button>
             </div>
         </div>
     );
