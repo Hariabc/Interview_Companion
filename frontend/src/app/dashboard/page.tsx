@@ -1,10 +1,26 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { BarChart2, Clock3, FileText, LogOut } from 'lucide-react';
+import { BarChart2, Clock3, FileText, LogOut, Sparkles } from 'lucide-react';
 import { ProgressChart, MasteryChart } from '@/components/DashboardCharts';
+
+const MODE_META: Record<string, { title: string; blurb: string }> = {
+    balanced: { title: 'Balanced Mix', blurb: 'Mixed technical + behavioral interview.' },
+    hr_round: { title: 'HR Round', blurb: 'Culture fit, communication, and conflict scenarios.' },
+    dsa_round: { title: 'DSA Round', blurb: 'Algorithms, complexity, and edge cases.' },
+    salary_negotiation: { title: 'Salary Negotiation', blurb: 'Compensation discussion and value framing.' },
+    system_design: { title: 'System Design', blurb: 'Architecture and scaling trade-offs.' },
+    behavioral_storytelling: { title: 'Behavioral Storytelling', blurb: 'STAR-based experience storytelling.' },
+    managerial_leadership: { title: 'Managerial Leadership', blurb: 'People leadership and stakeholder management.' },
+    rapid_fire: { title: 'Rapid Fire', blurb: 'Fast mixed questions for quick thinking.' }
+};
+
+function getMode(session: any): string {
+    const mode = String(session?.conversation_context?.interview_mode || 'balanced');
+    return MODE_META[mode] ? mode : 'balanced';
+}
 
 export default function Dashboard() {
     const router = useRouter();
@@ -15,6 +31,7 @@ export default function Dashboard() {
     const [loading, setLoading] = useState(true);
     const [user, setUser] = useState<any>(null);
     const [error, setError] = useState<string | null>(null);
+    const [modeFilter, setModeFilter] = useState<string>('all');
 
     useEffect(() => {
         const fetchData = async () => {
@@ -49,6 +66,16 @@ export default function Dashboard() {
         };
         fetchData();
     }, [router]);
+
+    const modeOptions = useMemo(() => {
+        const found = Array.from(new Set(recentSessions.map((s) => getMode(s))));
+        return ['all', ...found];
+    }, [recentSessions]);
+
+    const filteredSessions = useMemo(() => {
+        if (modeFilter === 'all') return recentSessions;
+        return recentSessions.filter((session) => getMode(session) === modeFilter);
+    }, [recentSessions, modeFilter]);
 
     if (loading) {
         return (
@@ -101,6 +128,25 @@ export default function Dashboard() {
                 </header>
 
                 <main className="space-y-7">
+                    <section className="glass-card p-5">
+                        <div className="mb-4 flex items-center gap-2 text-slate-200">
+                            <Sparkles size={16} className="text-cyan-300" />
+                            <h3 className="text-lg font-medium">Practice Modes</h3>
+                        </div>
+                        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                            {Object.entries(MODE_META).map(([mode, meta]) => (
+                                <Link
+                                    key={mode}
+                                    href={`/interview/setup?mode=${mode}`}
+                                    className="rounded-xl border border-white/10 bg-white/5 p-4 transition hover:border-cyan-400/40 hover:bg-cyan-500/5"
+                                >
+                                    <p className="font-semibold text-slate-100">{meta.title}</p>
+                                    <p className="mt-1 text-xs text-slate-300">{meta.blurb}</p>
+                                </Link>
+                            ))}
+                        </div>
+                    </section>
+
                     <section className="grid grid-cols-1 gap-4 md:grid-cols-3">
                         <StatCard label="Total Sessions" value={stats?.totalSessions || 0} />
                         <StatCard label="Average Score" value={`${stats?.avgScores?.overall || 0}%`} />
@@ -130,48 +176,70 @@ export default function Dashboard() {
                     </div>
 
                     <div className="glass-card p-6">
-                        <h3 className="mb-4 flex items-center gap-2 text-lg font-medium text-slate-200">
-                            <Clock3 size={18} />
-                            Recent Sessions
-                        </h3>
+                        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                            <h3 className="flex items-center gap-2 text-lg font-medium text-slate-200">
+                                <Clock3 size={18} />
+                                Recent Sessions
+                            </h3>
+                            <div className="flex flex-wrap gap-2">
+                                {modeOptions.map((mode) => (
+                                    <button
+                                        key={mode}
+                                        type="button"
+                                        onClick={() => setModeFilter(mode)}
+                                        className={`rounded-full border px-3 py-1 text-xs transition ${modeFilter === mode
+                                            ? 'border-cyan-400/60 bg-cyan-500/15 text-cyan-100'
+                                            : 'border-white/15 bg-white/5 text-slate-300 hover:border-white/30'}`}
+                                    >
+                                        {mode === 'all' ? 'All Modes' : MODE_META[mode]?.title || mode}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
                         <div className="space-y-3">
-                            {recentSessions.length > 0 ? recentSessions.map((session) => (
-                                <div key={session.id} className="rounded-xl border border-white/10 bg-white/5 p-4">
-                                    <div className="flex flex-wrap items-center justify-between gap-3">
-                                        <div>
-                                            <p className="font-medium text-slate-100">
-                                                {session.topics && session.topics.length > 0
-                                                    ? `${session.topics.slice(0, 3).join(', ')}${session.topics.length > 3 ? '...' : ''} Interview`
-                                                    : 'General Interview Session'}
-                                            </p>
-                                            <p className="subtle-text text-xs">
-                                                {new Date(session.start_time).toLocaleDateString()} | {session.status}
-                                            </p>
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                            {session.total_score ? (
-                                                <span className="rounded-lg border border-emerald-400/25 bg-emerald-500/10 px-2 py-1 text-xs font-semibold text-emerald-200">
-                                                    {session.total_score}%
+                            {filteredSessions.length > 0 ? filteredSessions.map((session) => {
+                                const mode = getMode(session);
+                                return (
+                                    <div key={session.id} className="rounded-xl border border-white/10 bg-white/5 p-4">
+                                        <div className="flex flex-wrap items-center justify-between gap-3">
+                                            <div>
+                                                <p className="font-medium text-slate-100">
+                                                    {session.topics && session.topics.length > 0
+                                                        ? `${session.topics.slice(0, 3).join(', ')}${session.topics.length > 3 ? '...' : ''} Interview`
+                                                        : 'General Interview Session'}
+                                                </p>
+                                                <p className="subtle-text text-xs">
+                                                    {new Date(session.start_time).toLocaleDateString()} | {session.status}
+                                                </p>
+                                                <p className="mt-1 inline-flex rounded-lg border border-violet-400/25 bg-violet-500/10 px-2 py-1 text-[11px] font-medium text-violet-200">
+                                                    {MODE_META[mode]?.title || 'Balanced Mix'}
+                                                </p>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                {session.total_score ? (
+                                                    <span className="rounded-lg border border-emerald-400/25 bg-emerald-500/10 px-2 py-1 text-xs font-semibold text-emerald-200">
+                                                        {session.total_score}%
+                                                    </span>
+                                                ) : null}
+                                                <span className={`rounded-lg border px-2 py-1 text-xs font-medium ${session.status === 'completed'
+                                                    ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-200'
+                                                    : session.status === 'in_progress'
+                                                        ? 'border-cyan-400/25 bg-cyan-500/10 text-cyan-100'
+                                                        : 'border-white/20 bg-white/10 text-slate-200'
+                                                    }`}>
+                                                    {session.status.replace('_', ' ').toUpperCase()}
                                                 </span>
-                                            ) : null}
-                                            <span className={`rounded-lg border px-2 py-1 text-xs font-medium ${session.status === 'completed'
-                                                ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-200'
-                                                : session.status === 'in_progress'
-                                                    ? 'border-cyan-400/25 bg-cyan-500/10 text-cyan-100'
-                                                    : 'border-white/20 bg-white/10 text-slate-200'
-                                                }`}>
-                                                {session.status.replace('_', ' ').toUpperCase()}
-                                            </span>
-                                            {session.status === 'completed' ? (
-                                                <Link href={`/interview/room/${session.id}/result`} className="ghost-btn px-3 py-1.5 text-xs">
-                                                    View Report
-                                                </Link>
-                                            ) : null}
+                                                {session.status === 'completed' ? (
+                                                    <Link href={`/interview/room/${session.id}/result`} className="ghost-btn px-3 py-1.5 text-xs">
+                                                        View Report
+                                                    </Link>
+                                                ) : null}
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
-                            )) : (
-                                <div className="py-6 text-center subtle-text">No recent sessions found. Start one.</div>
+                                );
+                            }) : (
+                                <div className="py-6 text-center subtle-text">No sessions for the selected mode.</div>
                             )}
                         </div>
                     </div>

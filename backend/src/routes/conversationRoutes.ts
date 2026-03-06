@@ -4,16 +4,31 @@ import { supabase } from '../config/supabase';
 import axios from 'axios';
 import multer from 'multer';
 import FormData from 'form-data';
+import {
+    buildModeDirective,
+    buildModeGreeting,
+    buildModeIntroScript,
+    buildModeRuntimeForStart,
+    buildRoleClarificationPrompt,
+    extractRoleSignals,
+    normalizeMode,
+    shouldRequestRoleClarification
+} from '../services/interviewModeEngine';
 
 const router = express.Router();
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
 const MANDATORY_TECHNICAL_TOPICS = ['Data Structures and Algorithms'];
+const NON_TECHNICAL_MODES = new Set(['hr_round', 'salary_negotiation', 'behavioral_storytelling', 'managerial_leadership']);
 
-function withMandatoryTechnicalTopics(topics: any): string[] {
+function withMandatoryTechnicalTopics(topics: any, includeMandatory: boolean = true): string[] {
     const input = Array.isArray(topics) ? topics : [];
     const normalized = input
         .map((t) => String(t || '').trim())
         .filter(Boolean);
+
+    if (!includeMandatory) {
+        return normalized;
+    }
 
     const existingLower = new Set(normalized.map((t) => t.toLowerCase()));
     for (const required of MANDATORY_TECHNICAL_TOPICS) {
@@ -23,6 +38,10 @@ function withMandatoryTechnicalTopics(topics: any): string[] {
     }
 
     return normalized;
+}
+
+function modeRequiresTechnicalTopics(mode: any): boolean {
+    return !NON_TECHNICAL_MODES.has(String(mode || '').trim().toLowerCase());
 }
 
 function detectConversationSignals(text: string) {
@@ -57,6 +76,17 @@ function extractCandidateName(introText: string) {
     return null;
 }
 
+function buildFallbackQuestion(topicHint?: string | null, difficultyHint: number = 3) {
+    const topic = String(topicHint || 'Data Structures and Algorithms').trim() || 'Data Structures and Algorithms';
+    const difficulty = Math.max(1, Math.min(5, Number(difficultyHint) || 3));
+    return {
+        question_text: `Let's start with ${topic}. Explain one problem you solved recently, your approach, and one improvement you would make now.`,
+        topic,
+        difficulty_level: difficulty,
+        ideal_answer_keywords: ['problem', 'approach', 'trade-off', 'time complexity', 'testing']
+    };
+}
+
 // Configure Multer for Memory Storage
 const storage = multer.memoryStorage();
 const upload = multer({
@@ -77,12 +107,34 @@ router.post('/start', authenticate, async (req: AuthRequest, res) => {
     const { sessionId, userName } = req.body;
 
     try {
-        // Call ML service to generate AI introduction
-        const mlResponse = await axios.post(`${ML_SERVICE_URL}/conversation/start`, {
-            user_name: userName || null
-        });
+        const { data: session } = await supabase
+            .from('interview_sessions')
+            .select('conversation_context')
+            .eq('id', sessionId)
+            .single();
 
-        const { intro_text, audio_base64, voice_used } = mlResponse.data;
+        const existingContext = session?.conversation_context || {};
+        const interviewMode = normalizeMode(existingContext?.interview_mode);
+        const intro_text = buildModeIntroScript(interviewMode, userName || null);
+
+        let audio_base64: string | null = null;
+        let voice_used = 'female_friendly';
+        try {
+            const tts = await axios.post(
+                `${ML_SERVICE_URL}/synthesize_speech`,
+                null,
+                {
+                    params: {
+                        text: intro_text,
+                        voice: 'female_friendly'
+                    }
+                }
+            );
+            audio_base64 = tts.data?.audio_base64 || null;
+            voice_used = tts.data?.voice_used || 'female_friendly';
+        } catch (ttsError: any) {
+            console.error('TTS failed for intro:', ttsError?.response?.data || ttsError?.message);
+        }
 
         // Save conversation turn to database
         const { data: conversationTurn, error: dbError } = await supabase
@@ -99,6 +151,16 @@ router.post('/start', authenticate, async (req: AuthRequest, res) => {
         if (dbError) {
             console.error('Error saving conversation turn:', dbError);
         }
+
+        await supabase
+            .from('interview_sessions')
+            .update({
+                conversation_context: {
+                    ...existingContext,
+                    mode_runtime: buildModeRuntimeForStart(interviewMode)
+                }
+            })
+            .eq('id', sessionId);
 
         res.json({
             intro_text,
@@ -178,7 +240,7 @@ router.post('/user-response', authenticate, upload.single('audio'), async (req: 
         // Get resume text if available
         const { data: session } = await supabase
             .from('interview_sessions')
-            .select('resume_profile_id')
+            .select('resume_profile_id, conversation_context')
             .eq('id', sessionId)
             .single();
 
@@ -199,9 +261,80 @@ router.post('/user-response', authenticate, upload.single('audio'), async (req: 
         });
 
         const userAnalysis = analysisResponse.data;
+        const existingContext = session?.conversation_context || {};
+        const configuredMode = normalizeMode(existingContext?.interview_mode);
+        const roleSignals = extractRoleSignals(userIntroTextValue);
+        const modeRuntime = existingContext?.mode_runtime || {};
+
+        const needsRoleClarification = shouldRequestRoleClarification(configuredMode, roleSignals)
+            && !Boolean(modeRuntime?.role_clarification_done);
+
+        if (needsRoleClarification) {
+            const followUpPrompt = buildRoleClarificationPrompt(configuredMode);
+            let followUpAudioBase64: string | null = null;
+            try {
+                const tts = await axios.post(
+                    `${ML_SERVICE_URL}/synthesize_speech`,
+                    null,
+                    {
+                        params: {
+                            text: followUpPrompt,
+                            voice: 'female_friendly'
+                        }
+                    }
+                );
+                followUpAudioBase64 = tts.data?.audio_base64 || null;
+            } catch (ttsErr: any) {
+                console.error('TTS synthesis failed for follow-up prompt:', ttsErr?.response?.data || ttsErr?.message);
+            }
+
+            try {
+                await supabase.from('conversation_turns').insert([{
+                    session_id: sessionId,
+                    speaker: 'ai',
+                    message_text: followUpPrompt,
+                    audio_url: null
+                }]);
+            } catch (followupDbErr) {
+                console.error('Error saving follow-up turn:', followupDbErr);
+            }
+
+            await supabase
+                .from('interview_sessions')
+                .update({
+                    conversation_context: {
+                        ...existingContext,
+                        mode_runtime: {
+                            ...modeRuntime,
+                            active_mode: configuredMode,
+                            stage: 'awaiting_role_details',
+                            role_clarification_done: true,
+                            role_signals: roleSignals,
+                            last_transition_at: new Date().toISOString()
+                        }
+                    }
+                })
+                .eq('id', sessionId);
+
+            return res.json({
+                user_intro_text: userIntroTextValue,
+                transcription_confidence: transcriptionConfidence,
+                analysis: userAnalysis,
+                mode: configuredMode,
+                conversation_complete: false,
+                follow_up_prompt: followUpPrompt,
+                follow_up_audio_base64: followUpAudioBase64
+            });
+        }
 
         // Generate contextual questions
-        const selectedTopicsWithTechnical = withMandatoryTechnicalTopics(req.body.selectedTopics || null);
+        const configuredTopics = Array.isArray(existingContext?.selected_topics)
+            ? existingContext?.selected_topics
+            : [];
+        const requestedTopics = Array.isArray(req.body.selectedTopics) ? req.body.selectedTopics : [];
+        const topicSource = requestedTopics.length > 0 ? requestedTopics : configuredTopics;
+        const selectedTopicsWithTechnical = withMandatoryTechnicalTopics(topicSource, modeRequiresTechnicalTopics(configuredMode));
+        const configuredCount = Math.max(2, Math.min(8, Number(existingContext?.target_questions) || 3));
         const { data: existingSessionQuestions } = await supabase
             .from('questions')
             .select('question_text')
@@ -212,15 +345,27 @@ router.post('/user-response', authenticate, upload.single('audio'), async (req: 
             .filter(Boolean);
 
         const questionsResponse = await axios.post(`${ML_SERVICE_URL}/conversation/generate_contextual_questions`, {
-            user_intro_analysis: userAnalysis,
+            user_intro_analysis: {
+                ...userAnalysis,
+                interview_mode: configuredMode,
+                coach_style: existingContext?.coach_style || 'balanced',
+                difficulty_preference: existingContext?.difficulty_preference || 'medium',
+                mode_prompt: existingContext?.mode_prompt || null,
+                mode_directive: buildModeDirective(configuredMode, roleSignals),
+                role_signals: roleSignals
+            },
             resume_text: resumeText,
             selected_topics: selectedTopicsWithTechnical,
-            count: 3,
+            count: configuredCount,
             asked_questions: askedQuestions,
             diversity_nonce: `${sessionId}-${Date.now()}`
         });
 
-        const questions = questionsResponse.data.questions;
+        const responseQuestions = Array.isArray(questionsResponse.data?.questions) ? questionsResponse.data.questions : [];
+        const validQuestions = responseQuestions.filter((q: any) => String(q?.question_text || '').trim());
+        const questions = validQuestions.length
+            ? validQuestions
+            : [buildFallbackQuestion(selectedTopicsWithTechnical?.[0] || userAnalysis?.key_topics?.[0], 3)];
 
         // Save questions to database
         const sanitizedQuestions = questions.map((q: any) => ({
@@ -268,9 +413,7 @@ router.post('/user-response', authenticate, upload.single('audio'), async (req: 
 
         // Personalized greeting after user introduction, before first question.
         const candidateName = extractCandidateName(userIntroTextValue);
-        const greetingText = candidateName
-            ? `Nice to meet you, ${candidateName}. We will go step by step. If you want to skip any question, just say skip. Let's begin.`
-            : "Nice to meet you. We will go step by step. If you want to skip any question, just say skip. Let's begin.";
+        const greetingText = buildModeGreeting(configuredMode, candidateName, roleSignals);
 
         let greetingAudioBase64: string | null = null;
         try {
@@ -305,7 +448,19 @@ router.post('/user-response', authenticate, upload.single('audio'), async (req: 
             .from('interview_sessions')
             .update({
                 conversation_phase: false,
-                conversation_context: userAnalysis,
+                conversation_context: {
+                    ...existingContext,
+                    ...(userAnalysis || {}),
+                    selected_topics: selectedTopicsWithTechnical,
+                    interview_mode: configuredMode,
+                    mode_runtime: {
+                        ...modeRuntime,
+                        active_mode: configuredMode,
+                        stage: 'questioning',
+                        role_signals: roleSignals,
+                        last_transition_at: new Date().toISOString()
+                    }
+                },
                 user_intro_summary: userIntroTextValue
             })
             .eq('id', sessionId);
@@ -388,14 +543,22 @@ router.post('/next-question', authenticate, async (req: AuthRequest, res) => {
             else if (avgScore >= 6) difficulty = 3;
             else difficulty = 2; // Easier if struggling
         }
+        const difficultyPreference = String(session?.conversation_context?.difficulty_preference || 'medium');
+        if (difficultyPreference === 'easy') difficulty = Math.max(1, difficulty - 1);
+        if (difficultyPreference === 'hard') difficulty = Math.min(5, difficulty + 1);
 
-        const contextTopics = Array.isArray(session?.conversation_context?.key_topics) && session?.conversation_context?.key_topics?.length
+        const configuredMode = normalizeMode(session?.conversation_context?.interview_mode);
+        const includeMandatoryTopics = modeRequiresTechnicalTopics(configuredMode);
+
+        const contextTopics = Array.isArray(session?.conversation_context?.selected_topics) && session?.conversation_context?.selected_topics?.length
+            ? session.conversation_context.selected_topics
+            : Array.isArray(session?.conversation_context?.key_topics) && session?.conversation_context?.key_topics?.length
             ? session.conversation_context.key_topics
             : (Array.isArray(session?.conversation_context?.areas_of_interest) && session?.conversation_context?.areas_of_interest?.length
                 ? session.conversation_context.areas_of_interest
                 : ['General']);
 
-        const contextTopicsWithTechnical = withMandatoryTechnicalTopics(contextTopics);
+        const contextTopicsWithTechnical = withMandatoryTechnicalTopics(contextTopics, includeMandatoryTopics);
         const { data: existingSessionQuestions } = await supabase
             .from('questions')
             .select('question_text')
@@ -410,10 +573,15 @@ router.post('/next-question', authenticate, async (req: AuthRequest, res) => {
         const mlResponse = await axios.post(`${ML_SERVICE_URL}/conversation/generate_contextual_questions`, {
             user_intro_analysis: {
                 ...(session.conversation_context || {}),
-                user_signals: userSignals
+                user_signals: userSignals,
+                interview_mode: configuredMode,
+                difficulty_preference: difficultyPreference,
+                coach_style: session?.conversation_context?.coach_style || 'balanced',
+                mode_directive: buildModeDirective(configuredMode, session?.conversation_context?.mode_runtime?.role_signals || {}),
+                role_signals: session?.conversation_context?.mode_runtime?.role_signals || {}
             },
             resume_text: resumeText,
-            selected_topics: withMandatoryTechnicalTopics(currentTopic ? [currentTopic] : contextTopicsWithTechnical),
+            selected_topics: withMandatoryTechnicalTopics(currentTopic ? [currentTopic] : contextTopicsWithTechnical, includeMandatoryTopics),
             count: 1,
             difficulty_hint: difficulty,
             previous_answer: previousAnswer,
@@ -422,11 +590,13 @@ router.post('/next-question', authenticate, async (req: AuthRequest, res) => {
             diversity_nonce: `${sessionId}-${Date.now()}`
         });
 
-        const nextQuestion = mlResponse.data.questions[0];
-
-        if (!nextQuestion) {
-            return res.json({ shouldContinue: false });
-        }
+        const generatedQuestions = Array.isArray(mlResponse.data?.questions) ? mlResponse.data.questions : [];
+        const nextQuestion = generatedQuestions[0] && String(generatedQuestions[0]?.question_text || '').trim()
+            ? generatedQuestions[0]
+            : buildFallbackQuestion(
+                String(currentTopic || contextTopicsWithTechnical?.[0] || 'Data Structures and Algorithms'),
+                difficulty
+            );
 
         // Save question to database
         const { data: insertedQuestion, error: questionError } = await supabase

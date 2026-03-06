@@ -19,6 +19,15 @@ router.get('/stats', authenticate, async (req: AuthRequest, res) => {
         if (sessionError) throw sessionError;
 
         const totalSessions = sessions.length;
+        const modeMap: Record<string, number> = {};
+        sessions.forEach((s: any) => {
+            const mode = String(s?.conversation_context?.interview_mode || 'balanced');
+            modeMap[mode] = (modeMap[mode] || 0) + 1;
+        });
+        const modeBreakdown = Object.keys(modeMap).map((mode) => ({
+            mode,
+            count: modeMap[mode]
+        }));
         // 1b. Fetch Topics for Recent Sessions
         const recentSessionsRaw = sessions.slice(0, 5);
         const recentSessionIds = recentSessionsRaw.map(s => s.id);
@@ -59,6 +68,7 @@ router.get('/stats', authenticate, async (req: AuthRequest, res) => {
 
         let progressHistory: any[] = [];
         let topicMastery: any[] = [];
+        let questionCount = 0;
 
         if (sessionIds.length > 0) {
             // Fetch answers for these sessions
@@ -70,6 +80,7 @@ router.get('/stats', authenticate, async (req: AuthRequest, res) => {
             if (ansError) throw ansError;
 
             if (answers && answers.length > 0) {
+                questionCount = answers.length;
                 let totalSemantic = 0;
                 let totalGrammar = 0;
                 let totalKeyword = 0;
@@ -133,7 +144,9 @@ router.get('/stats', authenticate, async (req: AuthRequest, res) => {
         res.json({
             stats: {
                 totalSessions,
-                avgScores
+                avgScores,
+                questionCount,
+                modeBreakdown
             },
             recentSessions,
             progressHistory,

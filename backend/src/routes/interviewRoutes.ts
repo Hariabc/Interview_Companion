@@ -7,12 +7,27 @@ const router = express.Router();
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
 const SKIP_ANSWER_MARKER = '[SKIPPED_BY_USER]';
 const MANDATORY_TECHNICAL_TOPICS = ['Data Structures and Algorithms'];
+const NON_TECHNICAL_MODES = new Set(['hr_round', 'salary_negotiation', 'behavioral_storytelling', 'managerial_leadership']);
+const SUPPORTED_MODES = new Set([
+    'balanced',
+    'hr_round',
+    'dsa_round',
+    'salary_negotiation',
+    'system_design',
+    'behavioral_storytelling',
+    'managerial_leadership',
+    'rapid_fire'
+]);
 
-function withMandatoryTechnicalTopics(topics: any): string[] {
+function withMandatoryTechnicalTopics(topics: any, includeMandatory: boolean = true): string[] {
     const input = Array.isArray(topics) ? topics : [];
     const normalized = input
         .map((t) => String(t || '').trim())
         .filter(Boolean);
+
+    if (!includeMandatory) {
+        return normalized;
+    }
 
     const existingLower = new Set(normalized.map((t) => t.toLowerCase()));
     for (const required of MANDATORY_TECHNICAL_TOPICS) {
@@ -24,11 +39,69 @@ function withMandatoryTechnicalTopics(topics: any): string[] {
     return normalized;
 }
 
+function normalizeInterviewMode(rawMode: any): string {
+    const mode = String(rawMode || '').trim().toLowerCase();
+    return SUPPORTED_MODES.has(mode) ? mode : 'balanced';
+}
+
+function defaultTopicsByMode(mode: string): string[] {
+    switch (mode) {
+        case 'hr_round':
+            return ['Behavioral', 'Communication', 'Conflict Resolution'];
+        case 'dsa_round':
+            return ['Data Structures and Algorithms', 'Problem Solving'];
+        case 'salary_negotiation':
+            return ['Salary Negotiation', 'Offer Strategy', 'Career Growth'];
+        case 'system_design':
+            return ['System Design', 'Scalability', 'Architecture'];
+        case 'behavioral_storytelling':
+            return ['Behavioral', 'Leadership', 'Ownership'];
+        case 'managerial_leadership':
+            return ['Leadership', 'Stakeholder Management', 'Execution'];
+        case 'rapid_fire':
+            return ['JavaScript', 'Node.js', 'SQL', 'System Design'];
+        default:
+            return ['React', 'Node.js', 'System Design', 'Behavioral', 'SQL', 'Python'];
+    }
+}
+
+function modePrompt(mode: string): string {
+    switch (mode) {
+        case 'hr_round':
+            return 'Focus on communication, conflict handling, teamwork, and role fit.';
+        case 'dsa_round':
+            return 'Focus on algorithms, edge cases, complexity analysis, and clean reasoning.';
+        case 'salary_negotiation':
+            return 'Simulate compensation negotiation with trade-offs, market framing, and professionalism.';
+        case 'system_design':
+            return 'Focus on architecture, scalability, reliability, and pragmatic trade-offs.';
+        case 'behavioral_storytelling':
+            return 'Use STAR-style behavioral prompts and push for measurable impact.';
+        case 'managerial_leadership':
+            return 'Probe people leadership, prioritization, influence, and decision quality.';
+        case 'rapid_fire':
+            return 'Ask concise, high-frequency mixed questions and evaluate quick thinking.';
+        default:
+            return 'Use a balanced mix of technical and behavioral prompts.';
+    }
+}
+
 function detectConversationSignals(text: string) {
     const normalized = String(text || '').toLowerCase();
     return {
         asks_for_help: /(help me|hint|clue|guidance|i don't know|dont know|not sure|confused)/.test(normalized),
         asks_to_skip: /(skip|pass this|move on|next question)/.test(normalized)
+    };
+}
+
+function buildFallbackQuestion(topicHint?: string | null, difficultyHint: number = 3) {
+    const topic = String(topicHint || 'Data Structures and Algorithms').trim() || 'Data Structures and Algorithms';
+    const difficulty = Math.max(1, Math.min(5, Number(difficultyHint) || 3));
+    return {
+        question_text: `Let's continue with ${topic}. Explain how you would approach a real-world problem in this area and discuss time-space trade-offs.`,
+        topic,
+        difficulty_level: difficulty,
+        ideal_answer_keywords: ['approach', 'trade-off', 'complexity', 'edge cases', 'testing']
     };
 }
 
@@ -39,6 +112,21 @@ router.post('/start', authenticate, async (req: AuthRequest, res) => {
     console.log('Starting interview for user:', userId, 'resumeId:', resumeId);
 
     try {
+        const interviewMode = normalizeInterviewMode(req.body.interviewMode);
+        const includeMandatoryTopics = !NON_TECHNICAL_MODES.has(interviewMode);
+        const mergedTopics = withMandatoryTechnicalTopics(
+            [...defaultTopicsByMode(interviewMode), ...(Array.isArray(topics) ? topics : [])],
+            includeMandatoryTopics
+        );
+        const selectedTopics = Array.from(new Set(mergedTopics.map((t) => String(t || '').trim()).filter(Boolean)));
+        const targetQuestions = Math.max(2, Math.min(12, Number(req.body.targetQuestions) || 5));
+        const difficultyPreference = ['easy', 'medium', 'hard'].includes(String(req.body.difficultyPreference || ''))
+            ? String(req.body.difficultyPreference)
+            : 'medium';
+        const coachStyle = ['supportive', 'strict', 'balanced'].includes(String(req.body.coachStyle || ''))
+            ? String(req.body.coachStyle)
+            : 'balanced';
+
         // 0. Resolve Resume ID (if null, get latest for user)
         let activeResumeId = resumeId;
         const skipResume = req.body.skipResume;
@@ -76,7 +164,16 @@ router.post('/start', authenticate, async (req: AuthRequest, res) => {
                 user_id: userId,
                 resume_profile_id: activeResumeId,
                 status: 'in_progress',
-                conversation_phase: true  // Start with conversation phase
+                conversation_phase: true,  // Start with conversation phase
+                conversation_context: {
+                    interview_mode: interviewMode,
+                    selected_topics: selectedTopics,
+                    target_questions: targetQuestions,
+                    difficulty_preference: difficultyPreference,
+                    coach_style: coachStyle,
+                    mode_prompt: modePrompt(interviewMode),
+                    mode_started_at: new Date().toISOString()
+                }
             }])
             .select()
             .single();
@@ -348,9 +445,12 @@ router.post('/answer', authenticate, async (req: AuthRequest, res) => {
                 diversity_nonce: `${sessionId}-${Date.now()}`
             });
 
-            const newQuestions = contextualResponse.data?.questions || [];
-            if (newQuestions.length > 0) {
-                const q = newQuestions[0];
+            const generatedQuestions = Array.isArray(contextualResponse.data?.questions) ? contextualResponse.data.questions : [];
+            const q = generatedQuestions[0] && String(generatedQuestions[0]?.question_text || '').trim()
+                ? generatedQuestions[0]
+                : buildFallbackQuestion(question?.topic || contextTopicsWithTechnical[0] || 'Data Structures and Algorithms', difficultyHint);
+
+            if (q && String(q.question_text || '').trim()) {
                 // Insert next prompt linked to session
                 const { data: insertedQ, error: insError } = await supabase
                     .from('questions')

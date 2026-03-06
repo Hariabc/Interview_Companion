@@ -85,6 +85,7 @@ export default function InterviewSession() {
     const [spokenAnswersCount, setSpokenAnswersCount] = useState(0);
     const [codingRoundCompleted, setCodingRoundCompleted] = useState(false);
     const [sessionNotice, setSessionNotice] = useState<string | null>(null);
+    const [clockText, setClockText] = useState('--:--:--');
 
     const audioRef = useRef<HTMLAudioElement | null>(null);
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -112,6 +113,10 @@ export default function InterviewSession() {
     const lastMicUiUpdateRef = useRef(0);
     const codingTransitionActiveRef = useRef(false);
     const isPlayingAudioRef = useRef(false);
+    const setAudioPlaybackState = (playing: boolean) => {
+        isPlayingAudioRef.current = playing;
+        setIsPlayingAudio(playing);
+    };
 
     useEffect(() => {
         isEndingRef.current = false;
@@ -250,6 +255,15 @@ export default function InterviewSession() {
         isPlayingAudioRef.current = isPlayingAudio;
     }, [isPlayingAudio]);
 
+    useEffect(() => {
+        const formatClock = () => new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+        setClockText(formatClock());
+        const interval = window.setInterval(() => {
+            setClockText(formatClock());
+        }, 1000);
+        return () => window.clearInterval(interval);
+    }, []);
+
     const cleanupRecorderResources = () => {
         if (recordingIntervalRef.current) {
             clearInterval(recordingIntervalRef.current);
@@ -323,7 +337,7 @@ export default function InterviewSession() {
             });
         }
 
-        setIsPlayingAudio(false);
+        setAudioPlaybackState(false);
         setIsRecording(false);
     };
 
@@ -367,21 +381,21 @@ export default function InterviewSession() {
                 utterance.voice = femaleVoice;
             }
             setTurn('ai');
-            setIsPlayingAudio(true);
+            setAudioPlaybackState(true);
             utterance.onend = () => {
                 if (isEndingRef.current) return;
-                setIsPlayingAudio(false);
+                setAudioPlaybackState(false);
                 onEnd?.();
             };
             utterance.onerror = () => {
                 if (isEndingRef.current) return;
-                setIsPlayingAudio(false);
+                setAudioPlaybackState(false);
                 onEnd?.();
             };
             window.speechSynthesis.speak(utterance);
         } catch (err) {
             console.error('Browser TTS failed:', err);
-            setIsPlayingAudio(false);
+            setAudioPlaybackState(false);
             onEnd?.();
         }
     };
@@ -443,20 +457,20 @@ export default function InterviewSession() {
                     return;
                 }
                 setTurn('ai');
-                setIsPlayingAudio(true);
+                setAudioPlaybackState(true);
             };
             audio.onended = () => {
                 if (isEndingRef.current) {
                     return;
                 }
-                setIsPlayingAudio(false);
+                setAudioPlaybackState(false);
                 onEnd?.();
             };
             audio.onerror = () => {
                 if (isEndingRef.current) {
                     return;
                 }
-                setIsPlayingAudio(false);
+                setAudioPlaybackState(false);
                 if (fallbackText) {
                     speakWithBrowserTTS(fallbackText, onEnd);
                     return;
@@ -466,7 +480,7 @@ export default function InterviewSession() {
 
             audio.play().catch((err) => {
                 console.error('Audio play failed:', err);
-                setIsPlayingAudio(false);
+                setAudioPlaybackState(false);
                 if (fallbackText) {
                     speakWithBrowserTTS(fallbackText, onEnd);
                 } else {
@@ -776,6 +790,45 @@ export default function InterviewSession() {
         }
     };
 
+    const recoverWithFallbackIntroQuestion = async (
+        token: string,
+        introContextText: string,
+        greetingText?: string | null,
+        greetingAudioBase64?: string | null
+    ): Promise<boolean> => {
+        try {
+            const fallbackResponse = await axios.post(
+                `${BACKEND_URL}/conversation/next-question`,
+                {
+                    sessionId,
+                    previousAnswer: introContextText?.trim() || 'Candidate shared introduction. Start with a foundational technical question.',
+                    audioMetrics: null,
+                    currentTopic: null
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
+            );
+
+            const fallbackQuestion = fallbackResponse.data?.question as Question | undefined;
+            if (!fallbackQuestion?.id) {
+                return false;
+            }
+
+            noResponseAttemptsRef.current = 0;
+            setQuestions([fallbackQuestion]);
+            setCurrentQuestionIndex(0);
+            activeQuestionIdRef.current = fallbackQuestion.id;
+            playGreetingThenFirstQuestion(greetingText || null, greetingAudioBase64 || null, fallbackQuestion);
+            return true;
+        } catch (fallbackErr) {
+            console.error('Fallback intro question generation failed:', fallbackErr);
+            return false;
+        }
+    };
+
     const processAudioAnswer = async (audioBlob: Blob, modeHint?: RecordingMode | null, questionIdHint?: string) => {
         setLoading(true);
         try {
@@ -856,11 +909,34 @@ export default function InterviewSession() {
                     }
                 }
 
+                if (response.data?.conversation_complete === false && response.data?.follow_up_prompt) {
+                    const followUpText = String(response.data.follow_up_prompt || '').trim();
+                    const followUpAudio = response.data?.follow_up_audio_base64 || null;
+                    if (followUpText) {
+                        setSessionNotice(followUpText);
+                        if (followUpAudio) {
+                            playAudioFromBase64(followUpAudio, () => beginUserTurn('user_intro'), followUpText);
+                        } else {
+                            speakWithPreferredFemaleVoice(followUpText, () => beginUserTurn('user_intro'));
+                        }
+                        return;
+                    }
+                }
+
                 const generatedQuestions = response.data.questions || [];
                 if (isEndingRef.current) {
                     return;
                 }
                 if (!generatedQuestions.length) {
+                    const recovered = await recoverWithFallbackIntroQuestion(
+                        token,
+                        analyzedIntroTranscript || response.data?.user_intro_text || '',
+                        response.data?.greeting_text || null,
+                        response.data?.greeting_audio_base64 || null
+                    );
+                    if (recovered) {
+                        return;
+                    }
                     throw new Error('No interview questions were generated from your introduction.');
                 }
                 const greetingText = response.data?.greeting_text || null;
@@ -876,14 +952,15 @@ export default function InterviewSession() {
             let publicUrl: string | null = null;
             try {
                 const fileName = `${sessionId}_${Date.now()}.webm`;
+                const filePath = `answers/${fileName}`;
                 const { error: uploadError } = await supabase.storage
-                    .from('interview-audio')
-                    .upload(fileName, audioBlob);
+                    .from('voice-answers')
+                    .upload(filePath, audioBlob);
 
                 if (!uploadError) {
                     const { data: { publicUrl: uploadedUrl } } = supabase.storage
-                        .from('interview-audio')
-                        .getPublicUrl(fileName);
+                        .from('voice-answers')
+                        .getPublicUrl(filePath);
                     publicUrl = uploadedUrl;
                 } else {
                     console.error('Audio upload failed. Continuing without audio URL:', uploadError);
@@ -933,6 +1010,52 @@ export default function InterviewSession() {
         }
     };
 
+    const recoverNextQuestionAfterAnswer = async (): Promise<Question | null> => {
+        try {
+            let token = sessionTokenRef.current || sessionToken;
+            if (!token) {
+                const { data: { session } } = await supabase.auth.getSession();
+                token = session?.access_token || null;
+                if (token) {
+                    setSessionToken(token);
+                    sessionTokenRef.current = token;
+                }
+            }
+            if (!token) {
+                return null;
+            }
+
+            const response = await axios.post(
+                `${BACKEND_URL}/conversation/next-question`,
+                {
+                    sessionId,
+                    previousAnswer: latestTranscriptRef.current || 'Please continue with the interview.',
+                    audioMetrics: audioMetrics || null,
+                    currentTopic: questions[currentQuestionIndex]?.topic || null
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
+            );
+
+            const q = response.data?.question as Question | undefined;
+            if (q?.id && q?.question_text) {
+                return q;
+            }
+        } catch (err) {
+            console.error('Failed to recover next question after answer:', err);
+        }
+
+        return {
+            id: `local-fallback-${Date.now()}`,
+            question_text: 'Let us continue with a technical follow-up. Explain a recent problem you solved, your approach, and the time-space trade-offs.',
+            topic: 'Data Structures and Algorithms',
+            difficulty: 3
+        };
+    };
+
     const goToNextTurn = (nextQuestionFromApi?: Question | null) => {
         if (isEndingRef.current) {
             return;
@@ -978,8 +1101,38 @@ export default function InterviewSession() {
                 return;
             }
 
-            setPhase('complete');
-            router.push(`/interview/room/${sessionId}/result`);
+            void (async () => {
+                const recoveredQuestion = await recoverNextQuestionAfterAnswer();
+                if (!recoveredQuestion) {
+                    setError('Could not load the next question. Please try once more.');
+                    return;
+                }
+                const nextIndex = currentQuestionIndex + 1;
+                setQuestions((prev) => {
+                    const updated = [...prev];
+                    if (updated[nextIndex]) {
+                        updated[nextIndex] = recoveredQuestion;
+                    } else {
+                        updated.push(recoveredQuestion);
+                    }
+                    return updated;
+                });
+                setCurrentQuestionIndex(nextIndex);
+                setPhase('questioning');
+                setTurn('ai');
+                if (recoveredQuestion.audio_base64) {
+                    playAudioFromBase64(
+                        recoveredQuestion.audio_base64,
+                        () => beginUserTurn('questioning', recoveredQuestion.id),
+                        recoveredQuestion.question_text
+                    );
+                } else {
+                    speakWithPreferredFemaleVoice(
+                        recoveredQuestion.question_text || '',
+                        () => beginUserTurn('questioning', recoveredQuestion.id)
+                    );
+                }
+            })();
         }, transitionDelay);
     };
 
@@ -1057,7 +1210,7 @@ export default function InterviewSession() {
         if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
             window.speechSynthesis.cancel();
         }
-        setIsPlayingAudio(false);
+        setAudioPlaybackState(false);
         setIsRecording(false);
         setTurn('ai');
 
@@ -1235,6 +1388,16 @@ export default function InterviewSession() {
 
                 const generatedQuestions = response.data.questions || [];
                 if (!generatedQuestions.length) {
+                    const recovered = await recoverWithFallbackIntroQuestion(
+                        token,
+                        textAnswer.trim(),
+                        response.data?.greeting_text || null,
+                        response.data?.greeting_audio_base64 || null
+                    );
+                    if (recovered) {
+                        setTextAnswer('');
+                        return;
+                    }
                     throw new Error('No interview questions were generated from your introduction.');
                 }
                 const greetingText = response.data?.greeting_text || null;
@@ -1343,7 +1506,7 @@ export default function InterviewSession() {
                             <p className="text-sm font-medium text-slate-200">Live Interview Room</p>
                             <p className="text-[11px] text-slate-400">Natural turn-based conversation</p>
                         </div>
-                        <p className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300">{new Date().toLocaleTimeString()}</p>
+                        <p suppressHydrationWarning className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300">{clockText}</p>
                     </div>
 
                     <div className="grid min-h-[320px] grid-cols-1 gap-4 md:grid-cols-2">
