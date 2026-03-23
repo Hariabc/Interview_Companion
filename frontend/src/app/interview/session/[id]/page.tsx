@@ -20,6 +20,8 @@ interface AudioMetrics {
     fluency_score: number;
     wpm: number;
     filler_words: number;
+    pitch_variance?: number;
+    volume_consistency?: number;
 }
 
 interface Question {
@@ -30,12 +32,23 @@ interface Question {
     difficulty?: number;
 }
 
+interface AdaptiveDecision {
+    strategy: 'clarify' | 'deepen' | 'simplify' | 'move_on' | 'recover';
+    rationale: string;
+    focus_topic?: string | null;
+    difficulty_adjustment?: number;
+}
+
+type CoachStyleMode = 'supportive' | 'balanced' | 'strict';
+type PressureLevel = 'off' | 'moderate' | 'intense';
+
 const SILENCE_THRESHOLD = 0.02;
 const SILENCE_HOLD_MS = 5000;
 const NO_SPEECH_TIMEOUT_MS = 5000;
 const MAX_RECORDING_MS = 90000;
 const MAX_NO_RESPONSE_ATTEMPTS = 2;
 const CODING_ROUND_TRIGGER_AFTER_ANSWERS = 2;
+const CODING_ENABLED_MODES = new Set(['balanced', 'dsa_round', 'system_design', 'rapid_fire']);
 const SKIP_ANSWER_MARKER = '[SKIPPED_BY_USER]';
 
 const ENCOURAGEMENT_MESSAGES = [
@@ -61,6 +74,102 @@ const isSkipIntent = (text?: string | null) => {
     );
 };
 
+const formatAdaptiveNotice = (decision: AdaptiveDecision) => {
+    const labels: Record<AdaptiveDecision['strategy'], string> = {
+        deepen: 'Adaptive follow-up: going deeper based on your previous answer.',
+        clarify: 'Adaptive follow-up: asking for more specificity from your previous answer.',
+        simplify: 'Adaptive follow-up: narrowing the scope to support a clearer response.',
+        move_on: 'Adaptive follow-up: moving to a new prompt after your skip request.',
+        recover: 'Adaptive follow-up: resetting with a cleaner question to help you recover.'
+    };
+
+    return `${labels[decision.strategy]} ${decision.rationale}`;
+};
+
+const getPressureConfig = (pressureLevel: PressureLevel) => {
+    if (pressureLevel === 'intense') {
+        return {
+            label: 'Intense Pressure',
+            maxRecordingMs: 45000,
+            noSpeechTimeoutMs: 3000,
+            silenceHoldMs: 3000,
+            banner: 'Fast-paced simulation: keep answers concise and decisive.'
+        };
+    }
+    if (pressureLevel === 'moderate') {
+        return {
+            label: 'Moderate Pressure',
+            maxRecordingMs: 60000,
+            noSpeechTimeoutMs: 4000,
+            silenceHoldMs: 4000,
+            banner: 'Moderate pressure simulation: prioritize structure and brevity.'
+        };
+    }
+    return {
+        label: 'Pressure Off',
+        maxRecordingMs: MAX_RECORDING_MS,
+        noSpeechTimeoutMs: NO_SPEECH_TIMEOUT_MS,
+        silenceHoldMs: SILENCE_HOLD_MS,
+        banner: ''
+    };
+};
+
+const buildLiveCoachingCues = ({
+    transcript,
+    metrics,
+    feedback,
+    question,
+    coachStyle
+}: {
+    transcript: string;
+    metrics: AudioMetrics | null;
+    feedback: any;
+    question: Question | null;
+    coachStyle: CoachStyleMode;
+}) => {
+    const cues: string[] = [];
+    const normalized = normalizeText(transcript || '');
+    const wordCount = normalized ? normalized.split(' ').filter(Boolean).length : 0;
+    const questionText = normalizeText(question?.question_text || '');
+    const topic = normalizeText(question?.topic || '');
+    const isBehavioral = topic.includes('behavioral') || topic.includes('leadership') || questionText.includes('tell me about a time') || questionText.includes('describe a time');
+
+    if (wordCount < 30) {
+        cues.push(isBehavioral
+            ? 'Add more detail: give context, your action, and the result.'
+            : 'Add more depth: explain your approach, trade-offs, and the final takeaway.');
+    }
+    if (metrics?.filler_words && metrics.filler_words >= 6) {
+        cues.push('Reduce filler words and finish one point cleanly before starting the next.');
+    }
+    if (metrics?.wpm && metrics.wpm > 175) {
+        cues.push('Slow down slightly so the interviewer can follow your reasoning.');
+    } else if (metrics?.wpm && metrics.wpm < 95) {
+        cues.push('Increase your pace a little to sound more confident and conversational.');
+    }
+    if (metrics?.confidence_score && metrics.confidence_score < 6) {
+        cues.push('Lead with your main point first, then add supporting details to sound more confident.');
+    }
+    if (isBehavioral && !/(result|impact|learned|improved|reduced|increased|delivered|resolved)/.test(normalized)) {
+        cues.push('Close the story with a clear outcome or measurable impact.');
+    }
+    if (!isBehavioral && !/(trade off|tradeoff|complexity|edge case|assumption)/.test(normalized)) {
+        cues.push('Mention trade-offs, complexity, or assumptions explicitly for stronger technical answers.');
+    }
+    if (typeof feedback?.feedback_text === 'string' && /specific|concrete|example/i.test(feedback.feedback_text)) {
+        cues.push('Use one concrete example instead of staying abstract.');
+    }
+
+    const unique = Array.from(new Set(cues)).slice(0, 3);
+    if (!unique.length) {
+        unique.push(coachStyle === 'strict'
+            ? 'Your answer is acceptable, but tighten structure and make the opening sentence sharper.'
+            : 'Good answer overall. Keep the same structure and make the next response equally clear.');
+    }
+
+    return unique;
+};
+
 export default function InterviewSession() {
     const params = useParams();
     const router = useRouter();
@@ -82,10 +191,16 @@ export default function InterviewSession() {
     const [textAnswer, setTextAnswer] = useState('');
     const [audioMetrics, setAudioMetrics] = useState<AudioMetrics | null>(null);
     const [feedback, setFeedback] = useState<any>(null);
+    const [adaptiveDecision, setAdaptiveDecision] = useState<AdaptiveDecision | null>(null);
     const [spokenAnswersCount, setSpokenAnswersCount] = useState(0);
     const [codingRoundCompleted, setCodingRoundCompleted] = useState(false);
+    const [codingRoundEnabled, setCodingRoundEnabled] = useState(true);
     const [sessionNotice, setSessionNotice] = useState<string | null>(null);
     const [clockText, setClockText] = useState('--:--:--');
+    const [liveCoachingEnabled, setLiveCoachingEnabled] = useState(false);
+    const [coachStyleMode, setCoachStyleMode] = useState<CoachStyleMode>('balanced');
+    const [liveCoachingCues, setLiveCoachingCues] = useState<string[]>([]);
+    const [pressureLevel, setPressureLevel] = useState<PressureLevel>('off');
 
     const audioRef = useRef<HTMLAudioElement | null>(null);
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -118,6 +233,17 @@ export default function InterviewSession() {
         setIsPlayingAudio(playing);
     };
 
+    const applySessionRuntimeConfig = (sessionPayload: any) => {
+        const context = sessionPayload?.conversation_context || {};
+        const mode = String(context?.interview_mode || 'balanced');
+        setCodingRoundEnabled(CODING_ENABLED_MODES.has(mode));
+        setLiveCoachingEnabled(Boolean(context?.live_coaching_enabled));
+        const style = String(context?.coach_style || 'balanced');
+        setCoachStyleMode(style === 'supportive' || style === 'strict' ? style : 'balanced');
+        const pressure = String(context?.pressure_level || 'off');
+        setPressureLevel(pressure === 'moderate' || pressure === 'intense' ? pressure : 'off');
+    };
+
     useEffect(() => {
         isEndingRef.current = false;
         codingTransitionActiveRef.current = false;
@@ -135,6 +261,15 @@ export default function InterviewSession() {
                 }
                 setSessionToken(session.access_token);
                 sessionTokenRef.current = session.access_token;
+                try {
+                    const sessionResponse = await axios.get(
+                        `${BACKEND_URL}/interviews/${sessionId}`,
+                        { headers: { Authorization: `Bearer ${session.access_token}` } }
+                    );
+                    applySessionRuntimeConfig(sessionResponse.data?.session);
+                } catch (sessionConfigErr) {
+                    console.error('Failed to load session runtime config:', sessionConfigErr);
+                }
                 const resumedFromCoding =
                     searchParams.get('resumeFromCoding') === '1' ||
                     (typeof window !== 'undefined' && sessionStorage.getItem(`ic_coding_done_${sessionId}`) === '1');
@@ -536,6 +671,9 @@ export default function InterviewSession() {
         setPhase(nextPhase);
         setTurn('user');
         setFeedback(null);
+        if (pressureLevel !== 'off') {
+            setSessionNotice(getPressureConfig(pressureLevel).banner);
+        }
         await startRecordingAuto(nextMode, nextQuestionId);
     };
 
@@ -579,6 +717,7 @@ export default function InterviewSession() {
                 `${BACKEND_URL}/interviews/${sessionId}`,
                 { headers: { Authorization: `Bearer ${token}` } }
             );
+            applySessionRuntimeConfig(response.data?.session);
             const serverQuestions = (response.data?.questions || []) as Question[];
             if (serverQuestions.length) {
                 setQuestions(serverQuestions);
@@ -629,7 +768,7 @@ export default function InterviewSession() {
             console.error('Failed to end interview after no response:', err);
         } finally {
             setPhase('complete');
-            router.push(`/interview/room/${sessionId}/result`);
+            router.push(`/interview/report/${sessionId}`);
         }
     };
 
@@ -677,6 +816,7 @@ export default function InterviewSession() {
             if (isEndingRef.current || codingTransitionActiveRef.current) {
                 return;
             }
+            const pressureConfig = getPressureConfig(pressureLevel);
             cleanupRecorderResources();
             recordingModeRef.current = mode;
             recordingQuestionIdRef.current = questionId || null;
@@ -729,7 +869,7 @@ export default function InterviewSession() {
             maxRecordingTimeoutRef.current = setTimeout(() => {
                 stopReasonRef.current = 'timeout';
                 stopRecordingAuto();
-            }, MAX_RECORDING_MS);
+            }, pressureConfig.maxRecordingMs);
 
             const audioContext = new AudioContext();
             audioContextRef.current = audioContext;
@@ -769,12 +909,12 @@ export default function InterviewSession() {
                 } else if (speechDetectedRef.current) {
                     if (!silenceStartedAtRef.current) {
                         silenceStartedAtRef.current = now;
-                    } else if (now - silenceStartedAtRef.current > SILENCE_HOLD_MS) {
+                    } else if (now - silenceStartedAtRef.current > pressureConfig.silenceHoldMs) {
                         stopReasonRef.current = 'silence';
                         stopRecordingAuto();
                         return;
                     }
-                } else if (recordingStartedAtRef.current && now - recordingStartedAtRef.current > NO_SPEECH_TIMEOUT_MS) {
+                } else if (recordingStartedAtRef.current && now - recordingStartedAtRef.current > pressureConfig.noSpeechTimeoutMs) {
                     stopReasonRef.current = 'no_speech_timeout';
                     stopRecordingAuto();
                     return;
@@ -848,19 +988,16 @@ export default function InterviewSession() {
                     throw new Error('Session token not available. Please login again.');
                 }
 
-                // Always analyze intro audio first so metrics are available in UI
                 let analyzedIntroTranscript = '';
                 try {
-                    const introAnalysisForm = new FormData();
-                    introAnalysisForm.append('file', audioBlob, 'user_intro.webm');
+                    const introTranscriptForm = new FormData();
+                    introTranscriptForm.append('file', audioBlob, 'user_intro.webm');
                     const introAnalysisResponse = await axios.post(
-                        `${ML_URL}/analyze_audio`,
-                        introAnalysisForm,
+                        `${ML_URL}/transcribe_audio`,
+                        introTranscriptForm,
                         { headers: { 'Content-Type': 'multipart/form-data' } }
                     );
-                    const introMetrics = introAnalysisResponse.data as AudioMetrics;
-                    setAudioMetrics(introMetrics);
-                    analyzedIntroTranscript = (introMetrics?.transcript || '').trim();
+                    analyzedIntroTranscript = String(introAnalysisResponse.data?.transcript || '').trim();
                     if (analyzedIntroTranscript) {
                         latestTranscriptRef.current = analyzedIntroTranscript;
                     }
@@ -949,25 +1086,100 @@ export default function InterviewSession() {
                 return;
             }
 
-            let publicUrl: string | null = null;
-            try {
-                const fileName = `${sessionId}_${Date.now()}.webm`;
-                const filePath = `answers/${fileName}`;
-                const { error: uploadError } = await supabase.storage
-                    .from('voice-answers')
-                    .upload(filePath, audioBlob);
+            const formData = new FormData();
+            formData.append('file', audioBlob, 'answer.webm');
 
-                if (!uploadError) {
-                    const { data: { publicUrl: uploadedUrl } } = supabase.storage
+            const uploadPromise = (async (): Promise<string | null> => {
+                try {
+                    const fileName = `${sessionId}_${Date.now()}.webm`;
+                    const filePath = `answers/${fileName}`;
+                    const { error: uploadError } = await supabase.storage
+                        .from('voice-answers')
+                        .upload(filePath, audioBlob, {
+                            contentType: audioBlob.type || 'audio/webm',
+                            upsert: false
+                        });
+
+                    if (uploadError) {
+                        console.error('Audio upload failed. Continuing without audio URL:', uploadError);
+                        return null;
+                    }
+
+                    const { data: { publicUrl } } = supabase.storage
                         .from('voice-answers')
                         .getPublicUrl(filePath);
-                    publicUrl = uploadedUrl;
-                } else {
-                    console.error('Audio upload failed. Continuing without audio URL:', uploadError);
+                    return publicUrl;
+                } catch (uploadErr) {
+                    console.error('Audio upload error. Continuing without audio URL:', uploadErr);
+                    return null;
                 }
-            } catch (uploadErr) {
-                console.error('Audio upload error. Continuing without audio URL:', uploadErr);
+            })();
+
+            const analysisPromise = axios.post(
+                `${ML_URL}/transcribe_audio`,
+                formData,
+                { headers: { 'Content-Type': 'multipart/form-data' } }
+            );
+
+            const [publicUrl, analysisResponse] = await Promise.all([uploadPromise, analysisPromise]);
+            const transcript = String(analysisResponse.data?.transcript || '').trim();
+            const fastMetrics: AudioMetrics = {
+                transcript,
+                emotion: 'neutral',
+                confidence_score: 0,
+                gaps: [],
+                fluency_score: 0,
+                wpm: 0,
+                filler_words: 0
+            };
+            setAudioMetrics(fastMetrics);
+            latestTranscriptRef.current = transcript;
+            if (typeof window !== 'undefined') {
+                sessionStorage.setItem('ic_latest_transcript', latestTranscriptRef.current);
             }
+            if (!transcript) {
+                await handleNoResponse(mode, questionIdHint || activeQuestionIdRef.current || undefined);
+                return;
+            }
+            if (isSkipIntent(transcript)) {
+                const responsePayload = await submitAnswer(
+                    `${SKIP_ANSWER_MARKER} ${transcript}`,
+                    publicUrl,
+                    null,
+                    questionIdHint || activeQuestionIdRef.current || undefined
+                );
+                if (responsePayload?.answer?.id) {
+                    void persistVoiceMetricsInBackground(responsePayload.answer.id, audioBlob);
+                }
+                return;
+            }
+            const responsePayload = await submitAnswer(transcript, publicUrl, null, questionIdHint || activeQuestionIdRef.current || undefined);
+            if (responsePayload?.answer?.id) {
+                void persistVoiceMetricsInBackground(responsePayload.answer.id, audioBlob);
+            }
+        } catch (err: any) {
+            const backendError = err?.response?.data?.error || err?.response?.data?.detail;
+            const fallbackError = err?.message || 'Unknown error';
+            const message = backendError || fallbackError;
+            console.error('Audio processing error:', err?.response?.data || err);
+            setError(`Failed to process audio: ${message}`);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const persistVoiceMetricsInBackground = async (answerId: string, audioBlob: Blob) => {
+        try {
+            let token = sessionTokenRef.current || sessionToken;
+            if (!token) {
+                const { data: { session } } = await supabase.auth.getSession();
+                token = session?.access_token || null;
+                if (token) {
+                    setSessionToken(token);
+                    sessionTokenRef.current = token;
+                }
+            }
+            if (!token) return;
 
             const formData = new FormData();
             formData.append('file', audioBlob, 'answer.webm');
@@ -980,37 +1192,21 @@ export default function InterviewSession() {
 
             const metrics = analysisResponse.data as AudioMetrics;
             setAudioMetrics(metrics);
-            latestTranscriptRef.current = metrics.transcript || '';
-            if (typeof window !== 'undefined') {
-                sessionStorage.setItem('ic_latest_transcript', latestTranscriptRef.current);
-            }
-            const transcript = (metrics.transcript || '').trim();
-            if (!transcript) {
-                await handleNoResponse(mode, questionIdHint || activeQuestionIdRef.current || undefined);
-                return;
-            }
-            if (isSkipIntent(transcript)) {
-                await submitAnswer(
-                    `${SKIP_ANSWER_MARKER} ${transcript}`,
-                    publicUrl,
-                    metrics,
-                    questionIdHint || activeQuestionIdRef.current || undefined
-                );
-                return;
-            }
-            await submitAnswer(transcript, publicUrl, metrics, questionIdHint || activeQuestionIdRef.current || undefined);
-        } catch (err: any) {
-            const backendError = err?.response?.data?.error || err?.response?.data?.detail;
-            const fallbackError = err?.message || 'Unknown error';
-            const message = backendError || fallbackError;
-            console.error('Audio processing error:', err?.response?.data || err);
-            setError(`Failed to process audio: ${message}`);
-        } finally {
-            setLoading(false);
+
+            await axios.post(
+                `${BACKEND_URL}/interviews/answer-metrics`,
+                {
+                    answerId,
+                    voiceMetrics: metrics
+                },
+                { headers: { Authorization: `Bearer ${token}` } }
+            );
+        } catch (backgroundErr) {
+            console.error('Background voice metric persistence failed:', backgroundErr);
         }
     };
 
-    const recoverNextQuestionAfterAnswer = async (): Promise<Question | null> => {
+    const recoverNextQuestionAfterAnswer = async (): Promise<{ question: Question | null; adaptiveDecision: AdaptiveDecision | null }> => {
         try {
             let token = sessionTokenRef.current || sessionToken;
             if (!token) {
@@ -1022,7 +1218,7 @@ export default function InterviewSession() {
                 }
             }
             if (!token) {
-                return null;
+                return { question: null, adaptiveDecision: null };
             }
 
             const response = await axios.post(
@@ -1041,18 +1237,22 @@ export default function InterviewSession() {
             );
 
             const q = response.data?.question as Question | undefined;
+            const decision = (response.data?.adaptive_decision || null) as AdaptiveDecision | null;
             if (q?.id && q?.question_text) {
-                return q;
+                return { question: q, adaptiveDecision: decision };
             }
         } catch (err) {
             console.error('Failed to recover next question after answer:', err);
         }
 
         return {
-            id: `local-fallback-${Date.now()}`,
-            question_text: 'Let us continue with a technical follow-up. Explain a recent problem you solved, your approach, and the time-space trade-offs.',
-            topic: 'Data Structures and Algorithms',
-            difficulty: 3
+            question: {
+                id: `local-fallback-${Date.now()}`,
+                question_text: 'Let us continue with a technical follow-up. Explain a recent problem you solved, your approach, and the time-space trade-offs.',
+                topic: 'Data Structures and Algorithms',
+                difficulty: 3
+            },
+            adaptiveDecision: null
         };
     };
 
@@ -1060,7 +1260,7 @@ export default function InterviewSession() {
         if (isEndingRef.current) {
             return;
         }
-        const transitionDelay = 2300;
+        const transitionDelay = 250;
 
         scheduleManagedTimeout(() => {
             if (isEndingRef.current || codingTransitionActiveRef.current) {
@@ -1102,10 +1302,15 @@ export default function InterviewSession() {
             }
 
             void (async () => {
-                const recoveredQuestion = await recoverNextQuestionAfterAnswer();
+                const recovered = await recoverNextQuestionAfterAnswer();
+                const recoveredQuestion = recovered.question;
                 if (!recoveredQuestion) {
                     setError('Could not load the next question. Please try once more.');
                     return;
+                }
+                setAdaptiveDecision(recovered.adaptiveDecision);
+                if (recovered.adaptiveDecision) {
+                    setSessionNotice(formatAdaptiveNotice(recovered.adaptiveDecision));
                 }
                 const nextIndex = currentQuestionIndex + 1;
                 setQuestions((prev) => {
@@ -1300,21 +1505,37 @@ export default function InterviewSession() {
                 { headers: { Authorization: `Bearer ${token}` } }
             );
 
-            const { evaluation, next_question } = response.data;
+            const { evaluation, next_question, adaptive_decision } = response.data;
             if (isEndingRef.current) {
                 return;
             }
             noResponseAttemptsRef.current = 0;
             setFeedback(evaluation);
+            if (liveCoachingEnabled) {
+                setLiveCoachingCues(buildLiveCoachingCues({
+                    transcript: text,
+                    metrics,
+                    feedback: evaluation,
+                    question: questions[currentQuestionIndex] || null,
+                    coachStyle: coachStyleMode
+                }));
+            } else {
+                setLiveCoachingCues([]);
+            }
+            setAdaptiveDecision(adaptive_decision || null);
+            if (adaptive_decision) {
+                setSessionNotice(formatAdaptiveNotice(adaptive_decision));
+            }
             const nextCount = spokenAnswersCount + 1;
             setSpokenAnswersCount(nextCount);
 
-            if (!codingRoundCompleted && nextCount >= CODING_ROUND_TRIGGER_AFTER_ANSWERS) {
+            if (codingRoundEnabled && !codingRoundCompleted && nextCount >= CODING_ROUND_TRIGGER_AFTER_ANSWERS) {
                 await startCodingRound(next_question || null);
                 return;
             }
 
             goToNextTurn(next_question || null);
+            return response.data;
         } catch (err: any) {
             const backendError = err?.response?.data?.error || err?.response?.data?.detail;
             const backendHint = err?.response?.data?.hint;
@@ -1322,6 +1543,7 @@ export default function InterviewSession() {
             const message = backendHint ? `${backendError || fallbackError} (${backendHint})` : (backendError || fallbackError);
             console.error('Answer submission error:', err?.response?.data || err);
             setError(`Failed to submit answer: ${message}`);
+            return null;
         } finally {
             setLoading(false);
         }
@@ -1353,7 +1575,7 @@ export default function InterviewSession() {
             console.error('Failed to end interview:', err);
         } finally {
             setPhase('complete');
-            router.push(`/interview/room/${sessionId}/result`);
+            router.push(`/interview/report/${sessionId}`);
         }
     };
 
@@ -1510,22 +1732,33 @@ export default function InterviewSession() {
                     </div>
 
                     <div className="grid min-h-[320px] grid-cols-1 gap-4 md:grid-cols-2">
-                        <div className={`relative flex min-h-[320px] flex-col overflow-hidden rounded-2xl border border-cyan-500/30 bg-gradient-to-br from-cyan-950/80 via-slate-900 to-blue-950/70 p-6 transition-all duration-500 ${turn === 'ai'
+                        <div className={`relative flex min-h-[320px] flex-col overflow-hidden rounded-2xl border border-cyan-500/30 bg-gradient-to-br from-cyan-950/80 via-slate-900 to-blue-950/70 p-4 transition-all duration-500 ${turn === 'ai'
                             ? 'ring-2 ring-cyan-300/35 shadow-[0_0_45px_-20px_rgba(34,211,238,0.7)]'
                             : 'opacity-90'
                             }`}>
                             <div className="absolute right-4 top-4 text-cyan-300/40">
                                 <Volume2 size={28} />
                             </div>
-                            <p className="text-xs uppercase tracking-wider text-cyan-200/70">AI Interviewer</p>
-                            <h2 className="mt-1 text-2xl font-bold" style={{ fontFamily: 'var(--font-space-grotesk), sans-serif' }}>Interviewer</h2>
-                            <p className="mt-3 max-w-sm text-sm text-cyan-100/70">
-                                I will guide this conversation step by step and adapt based on your responses.
-                            </p>
+                            <p className="mb-3 text-xs uppercase tracking-wider text-cyan-200/70">AI Interviewer</p>
+                            <div className="relative mx-auto flex h-[252px] w-full max-w-[206px] items-center justify-center overflow-hidden rounded-2xl border border-cyan-400/15 bg-[radial-gradient(circle_at_top,rgba(34,211,238,0.16),transparent_38%),linear-gradient(180deg,rgba(15,23,42,0.82),rgba(8,15,30,0.95))]">
+                                <div className="absolute inset-x-8 top-5 h-24 rounded-full bg-cyan-400/10 blur-3xl" />
+                                <div className={`relative flex h-24 w-24 items-center justify-center rounded-3xl border border-cyan-300/25 bg-cyan-400/10 transition ${isPlayingAudio ? 'shadow-[0_0_40px_-12px_rgba(34,211,238,0.8)]' : ''}`}>
+                                    <Volume2 size={40} className={`text-cyan-200 ${isPlayingAudio ? 'animate-pulse' : ''}`} />
+                                </div>
+                                <div className="absolute bottom-5 left-1/2 h-3 w-28 -translate-x-1/2 rounded-full bg-slate-950/70 blur-md" />
+                            </div>
+                            <div className="mt-4">
+                                <h2 className="text-xl font-bold text-white" style={{ fontFamily: 'var(--font-space-grotesk), sans-serif' }}>
+                                    AI Interviewer
+                                </h2>
+                                <p className="mt-1 text-sm text-cyan-100/70">
+                                    Professional interviewer mode with adaptive questioning, live evaluation, and real-time turn guidance.
+                                </p>
+                            </div>
 
                             <div className="mt-auto flex items-center gap-3 pt-10">
                                 <div className={`h-3.5 w-3.5 rounded-full ${isPlayingAudio ? 'bg-cyan-300 animate-pulse' : 'bg-cyan-900 border border-cyan-500'}`} />
-                                <p className="text-sm text-cyan-100/90">{isPlayingAudio ? 'Speaking live' : 'Standing by'}</p>
+                                <p className="text-sm text-cyan-100/90">{isPlayingAudio ? 'Speaking live' : turn === 'user' && isRecording ? 'Listening to your answer' : 'Standing by'}</p>
                                 <span className={`voice-bars ${isPlayingAudio ? 'opacity-100' : 'opacity-35'}`}>
                                     <span className="voice-bar bg-cyan-300" />
                                     <span className="voice-bar bg-cyan-300" />
@@ -1593,6 +1826,17 @@ export default function InterviewSession() {
                             <p className="text-sm text-cyan-100">{sessionNotice}</p>
                         </div>
                     )}
+                    {pressureLevel !== 'off' && (
+                        <div className="mb-4 rounded-xl border border-rose-500/25 bg-rose-950/20 p-3 animate-panel-in">
+                            <div className="flex items-center justify-between gap-3">
+                                <p className="text-sm font-semibold text-rose-300">{getPressureConfig(pressureLevel).label}</p>
+                                <span className="text-[11px] uppercase tracking-wider text-rose-200/80">
+                                    Answer Window {Math.round(getPressureConfig(pressureLevel).maxRecordingMs / 1000)}s
+                                </span>
+                            </div>
+                            <p className="mt-2 text-sm text-slate-200">{getPressureConfig(pressureLevel).banner}</p>
+                        </div>
+                    )}
                     {error && (
                         <div className="mb-4 rounded-xl border border-rose-500/35 bg-rose-950/30 p-3 animate-panel-in">
                             <div className="flex items-start justify-between gap-3">
@@ -1621,6 +1865,33 @@ export default function InterviewSession() {
                                 <p className="text-2xl font-bold text-white">{feedback.final_score}</p>
                             </div>
                             <p className="mt-2 text-sm text-slate-200">{feedback.feedback_text}</p>
+                        </div>
+                    )}
+
+                    {liveCoachingEnabled && (isRecording || liveCoachingCues.length > 0) && (
+                        <div className="mb-4 rounded-xl border border-amber-500/25 bg-amber-950/20 p-4 animate-panel-in">
+                            <div className="flex items-center justify-between gap-3">
+                                <p className="text-sm font-semibold text-amber-300">Live Coach</p>
+                                <span className="text-[11px] uppercase tracking-wider text-amber-200/80">
+                                    {isRecording ? 'Active' : 'Latest Cues'}
+                                </span>
+                            </div>
+                            {isRecording ? (
+                                <p className="mt-2 text-sm text-slate-200">
+                                    {normalizeText(currentQuestion?.topic || '').includes('behavioral')
+                                        ? 'Use STAR: set the context, your role, your action, and the result.'
+                                        : 'Lead with your answer first, then explain assumptions, trade-offs, and edge cases.'}
+                                </p>
+                            ) : null}
+                            {liveCoachingCues.length > 0 ? (
+                                <div className="mt-3 space-y-2">
+                                    {liveCoachingCues.map((cue) => (
+                                        <div key={cue} className="rounded-lg border border-white/10 bg-slate-950/35 px-3 py-2 text-sm text-slate-100">
+                                            {cue}
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : null}
                         </div>
                     )}
 

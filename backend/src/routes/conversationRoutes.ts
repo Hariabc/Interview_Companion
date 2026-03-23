@@ -87,6 +87,62 @@ function buildFallbackQuestion(topicHint?: string | null, difficultyHint: number
     };
 }
 
+function normalizeAnswerText(value: any): string {
+    return String(value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function inferAdaptiveDecision(previousAnswer: any, audioMetrics: any, currentTopic: any) {
+    const rawAnswer = String(previousAnswer || '').trim();
+    const normalized = normalizeAnswerText(rawAnswer);
+    const words = normalized ? normalized.split(' ').filter(Boolean) : [];
+    const wordCount = words.length;
+    const confidence = Number(audioMetrics?.confidence_score || 0);
+    const fluency = Number(audioMetrics?.fluency_score || 0);
+    const fillerWords = Number(audioMetrics?.filler_words || 0);
+    const asksForHelp = /(help me|hint|clue|guidance|i don't know|dont know|not sure|confused)/.test(normalized);
+    const asksToSkip = /(skip|pass this|move on|next question)/.test(normalized);
+    const mentionsTradeoff = /(trade off|tradeoff|pros and cons|advantage|disadvantage)/.test(normalized);
+    const mentionsComplexity = /(time complexity|space complexity|big o|o\(|linear|constant|quadratic)/.test(normalized);
+
+    let strategy: 'clarify' | 'deepen' | 'simplify' | 'move_on' | 'recover' = 'clarify';
+    let rationale = 'The next question should clarify the previous response before moving deeper.';
+    let difficultyAdjustment = 0;
+    let focusTopic = String(currentTopic || '').trim() || null;
+
+    if (asksToSkip) {
+        strategy = 'move_on';
+        rationale = 'The candidate explicitly asked to skip, so the interview should move on gracefully.';
+        difficultyAdjustment = -1;
+    } else if (asksForHelp || wordCount < 20 || fluency > 0 && fluency < 5 || confidence > 0 && confidence < 5) {
+        strategy = 'simplify';
+        rationale = 'The candidate appears unsure or gave a short answer, so the next question should stay supportive and narrower.';
+        difficultyAdjustment = -1;
+    } else if (wordCount >= 90 && confidence >= 7 && fluency >= 7 && (mentionsTradeoff || mentionsComplexity)) {
+        strategy = 'deepen';
+        rationale = 'The candidate gave a strong answer, so a deeper follow-up can probe trade-offs and real-world judgment.';
+        difficultyAdjustment = 1;
+    } else if (fillerWords >= 8 && wordCount < 45) {
+        strategy = 'recover';
+        rationale = 'The candidate struggled with delivery, so the next prompt should reset the conversation with a cleaner entry point.';
+        difficultyAdjustment = -1;
+    }
+
+    return {
+        strategy,
+        rationale,
+        focus_topic: focusTopic,
+        answer_word_count: wordCount,
+        confidence_score: Number.isFinite(confidence) ? confidence : null,
+        fluency_score: Number.isFinite(fluency) ? fluency : null,
+        filler_words: Number.isFinite(fillerWords) ? fillerWords : null,
+        difficulty_adjustment: difficultyAdjustment
+    };
+}
+
 // Configure Multer for Memory Storage
 const storage = multer.memoryStorage();
 const upload = multer({
@@ -568,12 +624,16 @@ router.post('/next-question', authenticate, async (req: AuthRequest, res) => {
             .map((q: any) => String(q.question_text || '').trim())
             .filter(Boolean);
 
+        const adaptiveDecision = inferAdaptiveDecision(previousAnswer, audioMetrics, currentTopic);
+        difficulty = Math.max(1, Math.min(5, difficulty + Number(adaptiveDecision.difficulty_adjustment || 0)));
+
         // Generate next question using ML service
         const userSignals = detectConversationSignals(String(previousAnswer || ''));
         const mlResponse = await axios.post(`${ML_SERVICE_URL}/conversation/generate_contextual_questions`, {
             user_intro_analysis: {
                 ...(session.conversation_context || {}),
                 user_signals: userSignals,
+                adaptive_context: adaptiveDecision,
                 interview_mode: configuredMode,
                 difficulty_preference: difficultyPreference,
                 coach_style: session?.conversation_context?.coach_style || 'balanced',
@@ -616,9 +676,37 @@ router.post('/next-question', authenticate, async (req: AuthRequest, res) => {
             return res.status(500).json({ error: 'Failed to save question' });
         }
 
+        try {
+            const existingContext = session?.conversation_context || {};
+            const adaptiveHistory = Array.isArray(existingContext?.adaptive_history) ? existingContext.adaptive_history.slice(-11) : [];
+            adaptiveHistory.push({
+                created_at: new Date().toISOString(),
+                previous_topic: currentTopic || null,
+                next_question_id: insertedQuestion.id,
+                next_question_text: insertedQuestion.question_text,
+                strategy: adaptiveDecision.strategy,
+                rationale: adaptiveDecision.rationale,
+                difficulty: difficulty
+            });
+
+            await supabase
+                .from('interview_sessions')
+                .update({
+                    conversation_context: {
+                        ...existingContext,
+                        adaptive_history: adaptiveHistory,
+                        latest_adaptive_decision: adaptiveDecision
+                    }
+                })
+                .eq('id', sessionId);
+        } catch (contextError) {
+            console.error('Failed to persist adaptive history:', contextError);
+        }
+
         res.json({
             question: insertedQuestion,
-            shouldContinue: true
+            shouldContinue: true,
+            adaptive_decision: adaptiveDecision
         });
 
     } catch (error: any) {

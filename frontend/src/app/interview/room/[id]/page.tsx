@@ -142,7 +142,7 @@ export default function InterviewRoom() {
         if (currentQIndex < questions.length - 1) {
             setCurrentQIndex(currentQIndex + 1);
         } else {
-            router.push(`/interview/room/${sessionId}/result`);
+            router.push(`/interview/report/${sessionId}`);
         }
     };
 

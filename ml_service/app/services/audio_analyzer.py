@@ -2,6 +2,7 @@ import wave
 import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 # Add FFmpeg to PATH before importing pydub (Windows compatibility)
 if os.name == 'nt':  # Windows
@@ -68,20 +69,27 @@ else:
     vosk.SetLogLevel(-1)
     model = vosk.Model(MODEL_PATH)
 
+def read_audio_bytes(audio_source):
+    if isinstance(audio_source, str):
+        with open(audio_source, "rb") as audio_file:
+            return audio_file.read()
+
+    audio_source.seek(0)
+    return audio_source.read()
+
 def convert_to_wav(audio_source):
     """
     Converts audio from various formats (WebM, MP3, etc.) to WAV format in memory.
     Returns a BytesIO object containing WAV data.
     """
     try:
-        # If it's a file path
-        if isinstance(audio_source, str):
+        if isinstance(audio_source, bytes):
+            audio = AudioSegment.from_file(io.BytesIO(audio_source))
+        elif isinstance(audio_source, str):
             audio = AudioSegment.from_file(audio_source)
         else:
-            # If it's a file-like object, read it
             audio_source.seek(0)
-            audio_bytes = audio_source.read()
-            audio = AudioSegment.from_file(io.BytesIO(audio_bytes))
+            audio = AudioSegment.from_file(io.BytesIO(audio_source.read()))
         
         # Convert to WAV format: mono, 16-bit, 16kHz (good for speech recognition)
         audio = audio.set_channels(1)
@@ -102,7 +110,6 @@ def analyze_audio_file(audio_source, existing_transcript=None):
     Analyzes an audio file to extract transcript and acoustic metrics.
     Returns a dictionary with transcript, wpm, silence_duration, etc.
     """
-    print(f"DEBUG: analyze_audio_file called with existing_transcript: {existing_transcript is not None}")
     results = {
         "transcript": "",
         "wpm": 0,
@@ -116,30 +123,91 @@ def analyze_audio_file(audio_source, existing_transcript=None):
         "gaps": []
     }
 
-    # Convert audio to WAV format first
-    wav_source = convert_to_wav(audio_source)
-    if not wav_source:
-        print("Failed to convert audio to WAV format")
+    try:
+        audio_bytes = read_audio_bytes(audio_source)
+    except Exception as e:
+        print(f"Failed to read audio bytes: {e}")
         return results
 
-    # 1. Transcription (Prefer existing, then Deepgram, then Vosk)
+    transcription_future = None
+    if not existing_transcript:
+        executor = ThreadPoolExecutor(max_workers=1)
+        transcription_future = executor.submit(transcribe_audio, audio_bytes)
+    else:
+        executor = None
+
+    wav_source = convert_to_wav(audio_bytes)
+    if not wav_source:
+        print("Failed to convert audio to WAV format")
+        if transcription_future:
+            executor.shutdown(wait=False)
+        return results
+
+    silence_ratio = 0
+
+    # 1. Acoustic Analysis with Librosa
+    try:
+        wav_source.seek(0)
+        y, sr = librosa.load(wav_source, sr=None)
+        duration = librosa.get_duration(y=y, sr=sr)
+        
+        rms = librosa.feature.rms(y=y)[0]
+        pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
+        
+        non_silent_intervals = librosa.effects.split(y, top_db=20)
+        non_silent_duration = sum(end - start for start, end in non_silent_intervals) / sr
+        results["pause_duration"] = round(duration - non_silent_duration, 2)
+        
+        pitch_values = pitches[pitches > 0]
+        if len(pitch_values) > 0:
+            results["pitch_variance"] = round(float(np.std(pitch_values)), 2)
+            
+        results["volume_consistency"] = round(1.0 - float(np.std(rms)), 2)
+
+        silent_intervals = []
+        last_end = 0
+        for start, end in non_silent_intervals:
+            gap_duration = (start - last_end) / sr
+            if gap_duration > 0.5:
+                silent_intervals.append({
+                    "start": round(last_end / sr, 2),
+                    "end": round(start / sr, 2),
+                    "duration": round(gap_duration, 2)
+                })
+            last_end = end
+
+        trailing_gap = (len(y) - last_end) / sr
+        if trailing_gap > 0.5:
+            silent_intervals.append({
+                "start": round(last_end / sr, 2),
+                "end": round(len(y) / sr, 2),
+                "duration": round(trailing_gap, 2)
+            })
+
+        results["gaps"] = silent_intervals
+        silence_ratio = results["pause_duration"] / duration if duration > 0 else 0
+    except Exception as e:
+        print(f"Error in acoustic analysis: {e}")
+        duration = 0
+
+    # 2. Transcription (Prefer existing, then Deepgram, then Vosk)
     if existing_transcript:
         results["transcript"] = existing_transcript
     else:
         transcript_result = None
         try:
-            # We need the audio bytes for Deepgram
-            wav_source.seek(0)
-            audio_bytes = wav_source.read()
-            transcript_result = transcribe_audio(audio_bytes)
+            if transcription_future:
+                transcript_result = transcription_future.result()
             
             if transcript_result and transcript_result.get("transcript"):
                 results["transcript"] = transcript_result["transcript"]
                 results["confidence_score"] = round(transcript_result.get("confidence", 0) * 10, 1)
         except Exception as e:
             print(f"Deepgram transcription failed: {e}")
+        finally:
+            if executor:
+                executor.shutdown(wait=False)
 
-        # Fallback to Vosk if Deepgram failed and Vosk is available
         if not results["transcript"] and model:
             try:
                 wav_source.seek(0)
@@ -163,65 +231,27 @@ def analyze_audio_file(audio_source, existing_transcript=None):
             except Exception as e:
                 print(f"Vosk fallback failed: {e}")
 
-    # 2. Acoustic Analysis with Librosa
     try:
-        wav_source.seek(0)
-        y, sr = librosa.load(wav_source, sr=None)
-        duration = librosa.get_duration(y=y, sr=sr)
-        
-        # Audio feature extraction
-        rms = librosa.feature.rms(y=y)[0]
-        pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
-        
-        # Silence Detection
-        non_silent_intervals = librosa.effects.split(y, top_db=20)
-        non_silent_duration = sum(end - start for start, end in non_silent_intervals) / sr
-        results["pause_duration"] = round(duration - non_silent_duration, 2)
-        
-        # Pitch Variance (Standard Deviation of pitch)
-        # Filter out zero pitches (unvoiced)
-        pitch_values = pitches[pitches > 0]
-        if len(pitch_values) > 0:
-            results["pitch_variance"] = round(float(np.std(pitch_values)), 2)
-            
-        # Volume Consistency (Inverse of RMS Standard Deviation)
-        # Lower std dev means more consistent volume. 
-        # We normalize specific to typical speech range.
-        results["volume_consistency"] = round(1.0 - float(np.std(rms)), 2) 
-
-        # 3. Derived Metrics
         word_count = len(results["transcript"].split())
         results["wpm"] = round((word_count / duration) * 60) if duration > 0 else 0
-        
-        # Filler Words (Simple keyword match)
+
         fillers = ["um", "uh", "like", "you know", "sort of"]
         filler_count = sum(results["transcript"].lower().count(f) for f in fillers)
         results["filler_words"] = filler_count
 
-        # 4. Scoring Logic (0-10)
-        
-        # Fluency Score:
-        # Base 10. Penalize for low WPM (<100) or high WPM (>160). Penalize for fillers.
         fluency = 10
         if results["wpm"] < 100: fluency -= 2
         if results["wpm"] > 160: fluency -= 1
         fluency -= (filler_count * 0.5)
         results["fluency_score"] = max(0, min(10, round(fluency, 1)))
-        
-        # Confidence Score Adjustment:
-        # Include acoustic stability if not already set by transcription confidence
+
         if results["confidence_score"] == 0:
             confidence = 10
-            silence_ratio = results["pause_duration"] / duration if duration > 0 else 0
             if silence_ratio > 0.2: confidence -= (silence_ratio * 10) # Heavy penalty for silence
             if results["volume_consistency"] < 0.8: confidence -= 1
             if results["wpm"] < 80: confidence -= 2
             results["confidence_score"] = max(0, min(10, round(confidence, 1)))
 
-        # 5. Emotion Analysis (Basic Heuristics)
-        # Low pitch variance + low volume + high silence = nervous/monotone
-        # High pitch variance + high volume = energetic
-        # Medium = calm/professional
         if results["pitch_variance"] > 300 and results["volume_consistency"] > 0.8:
             results["emotion"] = "energetic"
         elif silence_ratio > 0.3 or results["pitch_variance"] < 50:
@@ -229,33 +259,7 @@ def analyze_audio_file(audio_source, existing_transcript=None):
         else:
             results["emotion"] = "calm"
 
-        # 6. Gap Analysis (Detailed)
-        # Find silence intervals longer than 0.5 seconds
-        silent_intervals = []
-        last_end = 0
-        for start, end in non_silent_intervals:
-            gap_duration = (start - last_end) / sr
-            if gap_duration > 0.5:
-                silent_intervals.append({
-                    "start": round(last_end / sr, 2),
-                    "end": round(start / sr, 2),
-                    "duration": round(gap_duration, 2)
-                })
-            last_end = end
-        
-        # Add trailing gap if any
-        trailing_gap = (len(y) - last_end) / sr
-        if trailing_gap > 0.5:
-            silent_intervals.append({
-                "start": round(last_end / sr, 2),
-                "end": round(len(y) / sr, 2),
-                "duration": round(trailing_gap, 2)
-            })
-            
-        results["gaps"] = silent_intervals
-
     except Exception as e:
-        print(f"Error in acoustic analysis: {e}")
-        # Fallback if librosa fails (e.g., file codec issues)
+        print(f"Error in derived metric analysis: {e}")
 
     return results

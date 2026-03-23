@@ -86,7 +86,7 @@ export default function AudioRecorder({ onAnalysisComplete, currentQuestionId, s
             });
 
             if (response.data.analysis) {
-                onAnalysisComplete(response.data.analysis);
+                onAnalysisComplete(response.data);
             } else {
                 setError("Analysis failed. No results returned.");
             }

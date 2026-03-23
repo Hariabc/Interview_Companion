@@ -220,6 +220,7 @@ def generate_contextual_questions(
     safe_count = max(1, int(count or 1))
     interview_mode = str(user_intro_analysis.get("interview_mode", "balanced") or "balanced").strip().lower()
     mode_directive = str(user_intro_analysis.get("mode_directive", "") or "").strip()
+    adaptive_context = user_intro_analysis.get("adaptive_context", {}) or {}
     non_technical_modes = {"hr_round", "salary_negotiation", "behavioral_storytelling", "managerial_leadership"}
     must_include_dsa = interview_mode not in non_technical_modes
 
@@ -242,6 +243,7 @@ def generate_contextual_questions(
         skills_context = f"\n\nMentioned Skills: {', '.join(mentioned_skills)}" if mentioned_skills else ""
         previous_answer_context = f"\n\nCandidate's Most Recent Answer (transcript): {previous_answer}" if previous_answer else ""
         audio_metrics_context = f"\n\nVoice Metrics: {json.dumps(audio_metrics)}" if audio_metrics else ""
+        adaptive_context_text = f"\n\nAdaptive Follow-Up Strategy: {json.dumps(adaptive_context)}" if adaptive_context else ""
         asked_questions_context = ""
         if asked_questions:
             trimmed_asked = [str(q).strip() for q in asked_questions if str(q).strip()][:20]
@@ -268,6 +270,12 @@ def generate_contextual_questions(
                     - Keep each prompt to 1-3 sentences, concise and spoken-friendly
                     - If candidate asks for help/support, adapt tone to supportive coaching before technical probing
                     - If candidate asks to skip, acknowledge and move on gracefully
+                    - Respect the adaptive follow-up strategy when provided:
+                      - deepen: probe trade-offs, edge cases, scale, failure modes, or judgment
+                      - clarify: ask the candidate to make the previous answer more concrete or specific
+                      - simplify: ask a narrower, more answerable version in the same area
+                      - move_on: switch topic politely without punishing the candidate
+                      - recover: reset with a cleaner, confidence-building question
                     - Do not inject generic motivational lines unless the candidate explicitly asks for help/support
                     - Keep prompts consistent with selected interview mode and mode directive
                     - Never repeat or trivially rephrase a question already asked in this session
@@ -304,6 +312,7 @@ def generate_contextual_questions(
                     {resume_context}
                     {previous_answer_context}
                     {audio_metrics_context}
+                    {adaptive_context_text}
                     {asked_questions_context}
                     {diversity_context}
                     {history_context}

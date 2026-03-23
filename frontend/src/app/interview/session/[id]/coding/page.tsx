@@ -1,12 +1,11 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import dynamic from 'next/dynamic';
 import axios from 'axios';
+import MonacoEditor from '@monaco-editor/react';
 import { supabase } from '@/lib/supabaseClient';
-import { Loader2, Play, CheckCircle2, ArrowLeft } from 'lucide-react';
-
-const MonacoEditor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
+import { Play, CheckCircle2, ArrowLeft, Code2, Gauge, TerminalSquare, Sparkles, CheckCheck } from 'lucide-react';
+import { AppLoadingScreen } from '@/components/AppLoadingScreen';
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3000';
 const FEMALE_VOICE_HINTS = ['jenny', 'aria', 'zira', 'sara', 'emma', 'female', 'woman'];
 
@@ -24,6 +23,7 @@ interface CodingRunResult {
     mode: 'run' | 'submit';
     passed: number;
     total: number;
+    run_count?: number;
     all_passed?: boolean;
     results: Array<{
         hidden?: boolean;
@@ -40,6 +40,21 @@ interface CodingRunResult {
         optimizations: string[];
         positives: string[];
         negatives: string[];
+    };
+    coding_round_report?: {
+        language: string;
+        run_count: number;
+        submit_count: number;
+        visible_passed: number;
+        visible_total: number;
+        hidden_passed: number;
+        hidden_total: number;
+        completed_test_cases: number;
+        code_metrics?: {
+            line_count: number;
+            non_empty_line_count: number;
+            character_count: number;
+        };
     };
     feedback_audio_base64?: string | null;
 }
@@ -67,6 +82,31 @@ export default function CodingRoundPage() {
     const [error, setError] = useState<string | null>(null);
     const audioRef = useRef<HTMLAudioElement | null>(null);
     const hasInitializedRef = useRef(false);
+
+    const handleEditorMount = (editor: any, monaco: any) => {
+        monaco.editor.defineTheme('interview-companion-dark', {
+            base: 'vs-dark',
+            inherit: true,
+            rules: [
+                { token: 'comment', foreground: '6b7a99' },
+                { token: 'keyword', foreground: '7dd3fc' },
+                { token: 'string', foreground: '86efac' },
+                { token: 'number', foreground: 'f9a8d4' }
+            ],
+            colors: {
+                'editor.background': '#08111f',
+                'editor.foreground': '#e5ecff',
+                'editor.lineHighlightBackground': '#0f1b33',
+                'editorLineNumber.foreground': '#51617f',
+                'editorLineNumber.activeForeground': '#cbd5e1',
+                'editor.selectionBackground': '#13304d',
+                'editorCursor.foreground': '#67e8f9',
+                'editorIndentGuide.background1': '#102038'
+            }
+        });
+        monaco.editor.setTheme('interview-companion-dark');
+        editor.focus();
+    };
 
     const speakFeedback = (text?: string | null) => {
         if (!text?.trim()) return;
@@ -279,75 +319,124 @@ export default function CodingRoundPage() {
         router.push(`/interview/session/${sessionId}?resumeFromCoding=1`);
     };
 
+    const latestReport = result?.coding_round_report || null;
+    const currentCode = codeByLanguage[language] || '';
+
     if (loading) {
         return (
-            <div className="app-shell flex items-center justify-center">
-                <div className="glass-card flex items-center gap-3 px-6 py-4">
-                    <Loader2 className="animate-spin text-cyan-400" />
-                    <p>Loading coding round...</p>
-                </div>
-            </div>
+            <AppLoadingScreen
+                badge="Coding Round"
+                title="Setting up your coding challenge"
+                description="We are loading the personalized problem, starter code, allowed languages, and coding-round context before the editor opens."
+                stageLabel="Preparing editor"
+                steps={['Loading challenge details', 'Preparing starter code', 'Opening your coding workspace']}
+                compact
+            />
         );
     }
 
     return (
         <div className="app-shell p-4 lg:p-6">
-            <div className="h-full grid grid-cols-1 lg:grid-cols-3 gap-4">
-                <section className="glass-card lg:col-span-2 p-4 flex flex-col">
-                    <div className="flex items-center justify-between mb-3">
-                        <h1 className="text-xl font-bold" style={{ fontFamily: 'var(--font-space-grotesk), sans-serif' }}>{challenge?.title || 'Coding Round'}</h1>
-                        <div className="flex items-center gap-2">
-                            <select
-                                value={language}
-                                onChange={(e) => setLanguage(e.target.value)}
-                                className="rounded border border-white/20 bg-slate-950 px-2 py-1 text-xs"
-                            >
-                                {(challenge?.languages || []).map((lang) => (
-                                    <option key={lang} value={lang}>{lang}</option>
-                                ))}
-                            </select>
-                            <button
-                                onClick={runCode}
-                                disabled={running}
-                                className="ghost-btn px-3 py-2 text-xs disabled:opacity-50 flex items-center gap-1"
-                            >
-                                <Play size={14} /> Run
-                            </button>
-                            <button
-                                onClick={submitCode}
-                                disabled={running}
-                                className="brand-btn px-3 py-2 text-xs disabled:opacity-50 flex items-center gap-1"
-                            >
-                                <CheckCircle2 size={14} /> Submit
-                            </button>
+            <div className="mx-auto grid max-w-7xl grid-cols-1 gap-4 lg:grid-cols-3">
+                <section className="glass-card lg:col-span-2 overflow-hidden">
+                    <div className="border-b border-white/10 bg-[linear-gradient(135deg,rgba(56,189,248,0.08),rgba(15,23,42,0.08))] p-5">
+                        <div className="flex flex-wrap items-start justify-between gap-4">
+                            <div>
+                                <p className="pill mb-3">Coding Interview Round</p>
+                                <h1 className="text-2xl font-semibold text-slate-50" style={{ fontFamily: 'var(--font-space-grotesk), sans-serif' }}>
+                                    {challenge?.title || 'Coding Round'}
+                                </h1>
+                                <p className="mt-2 max-w-3xl text-sm subtle-text">
+                                    Solve the challenge, validate against sample cases, and submit for optimization feedback and complexity analysis.
+                                </p>
+                            </div>
+                            <div className="grid gap-2 sm:grid-cols-2">
+                                <MetricBadge label="Language" value={language.toUpperCase()} icon={Code2} />
+                                <MetricBadge label="Visible Tests" value={`${challenge?.visible_tests?.length || 0}`} icon={TerminalSquare} />
+                                <MetricBadge label="Runs" value={`${result?.run_count || latestReport?.run_count || 0}`} icon={Gauge} />
+                                <MetricBadge label="Passed" value={`${result?.passed || 0}/${result?.total || challenge?.visible_tests?.length || 0}`} icon={CheckCheck} />
+                            </div>
                         </div>
                     </div>
-                    <div className="overflow-hidden rounded-xl border border-white/15 flex-1 min-h-[420px]">
-                        <MonacoEditor
-                            height="100%"
-                            theme="vs-dark"
-                            language={MONACO_LANGUAGE_MAP[language] || 'plaintext'}
-                            value={codeByLanguage[language] || ''}
-                            onChange={(value) => setCodeByLanguage((prev) => ({ ...prev, [language]: value || '' }))}
-                            options={{
-                                fontSize: 14,
-                                minimap: { enabled: false },
-                                scrollBeyondLastLine: false,
-                                wordWrap: 'on',
-                                automaticLayout: true
-                            }}
-                        />
+
+                    <div className="p-4 md:p-5">
+                        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                            <div className="flex items-center gap-2">
+                                <div className="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-3 py-1 text-xs text-cyan-100">
+                                    Interview editor
+                                </div>
+                                <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300">
+                                    Real-time sample test validation
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <select
+                                    value={language}
+                                    onChange={(e) => setLanguage(e.target.value)}
+                                    className="rounded-xl border border-white/20 bg-slate-950 px-3 py-2 text-xs text-slate-100"
+                                >
+                                    {(challenge?.languages || []).map((lang) => (
+                                        <option key={lang} value={lang}>{lang}</option>
+                                    ))}
+                                </select>
+                                <button
+                                    onClick={runCode}
+                                    disabled={running}
+                                    className="ghost-btn px-3 py-2 text-xs disabled:opacity-50 flex items-center gap-1"
+                                >
+                                    <Play size={14} /> Run Tests
+                                </button>
+                                <button
+                                    onClick={submitCode}
+                                    disabled={running}
+                                    className="brand-btn px-3 py-2 text-xs disabled:opacity-50 flex items-center gap-1"
+                                >
+                                    <CheckCircle2 size={14} /> Final Submit
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="overflow-hidden rounded-2xl border border-white/15 shadow-[0_32px_80px_-46px_rgba(56,189,248,0.35)]">
+                            <div className="flex items-center gap-2 border-b border-white/10 bg-slate-950/90 px-4 py-3">
+                                <span className="h-3 w-3 rounded-full bg-rose-400/80" />
+                                <span className="h-3 w-3 rounded-full bg-amber-300/80" />
+                                <span className="h-3 w-3 rounded-full bg-emerald-400/80" />
+                                <div className="ml-3 text-xs text-slate-400">{language}.{language === 'python' ? 'py' : language === 'javascript' ? 'js' : language === 'cpp' ? 'cpp' : language === 'java' ? 'java' : 'sql'}</div>
+                            </div>
+                            <div className="min-h-[520px]">
+                                <MonacoEditor
+                                    height="520px"
+                                    onMount={handleEditorMount}
+                                    language={MONACO_LANGUAGE_MAP[language] || 'plaintext'}
+                                    value={currentCode}
+                                    onChange={(value) => setCodeByLanguage((prev) => ({ ...prev, [language]: value || '' }))}
+                                    options={{
+                                        fontSize: 14,
+                                        minimap: { enabled: false },
+                                        scrollBeyondLastLine: false,
+                                        wordWrap: 'on',
+                                        automaticLayout: true,
+                                        fontLigatures: true,
+                                        padding: { top: 18, bottom: 18 },
+                                        smoothScrolling: true
+                                    }}
+                                />
+                            </div>
+                        </div>
                     </div>
                 </section>
 
-                <aside className="glass-card p-4 flex flex-col">
-                    <h2 className="text-sm uppercase tracking-wide text-slate-400 mb-2">Problem</h2>
-                    <div className="bg-slate-950/70 border border-white/10 rounded-xl p-3 text-sm whitespace-pre-wrap mb-3">
-                        {challenge?.prompt}
+                <aside className="glass-card flex flex-col p-4 md:p-5">
+                    <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                        <h2 className="text-sm uppercase tracking-wide text-slate-400 mb-2">Challenge Brief</h2>
+                        <div className="text-sm whitespace-pre-wrap text-slate-200">
+                            {challenge?.prompt}
+                        </div>
                     </div>
 
-                    <h2 className="text-sm uppercase tracking-wide text-slate-400 mb-2">Sample Tests</h2>
-                    <div className="space-y-2 mb-3 max-h-52 overflow-auto">
+                    <div className="mt-4">
+                        <h2 className="text-sm uppercase tracking-wide text-slate-400 mb-2">Sample Tests</h2>
+                        <div className="space-y-2 max-h-52 overflow-auto">
                         {(challenge?.visible_tests || []).map((t, idx) => (
                             <div key={idx} className="bg-slate-950/70 border border-white/10 rounded-lg p-2 text-xs">
                                 <p className="text-slate-400">Test {idx + 1}</p>
@@ -355,17 +444,25 @@ export default function CodingRoundPage() {
                                 <p>Expected: <span className="font-mono">{t.expected}</span></p>
                             </div>
                         ))}
+                        </div>
                     </div>
 
                     {result && (
-                        <div className="bg-slate-950/70 border border-white/10 rounded-xl p-3 text-xs space-y-2 mb-3">
-                            <p className="text-slate-200">Result: {result.passed}/{result.total} passed</p>
+                        <div className="mt-4 rounded-2xl border border-white/10 bg-slate-950/70 p-4 text-xs space-y-3">
+                            <div className="flex items-center justify-between gap-3">
+                                <p className="text-slate-100 font-semibold">Current Result</p>
+                                <span className={`rounded-full border px-3 py-1 ${result.all_passed ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-200' : 'border-amber-300/20 bg-amber-400/10 text-amber-100'}`}>
+                                    {result.passed}/{result.total} passed
+                                </span>
+                            </div>
                             {result.feedback && (
                                 <div className="space-y-1">
                                     <p className="text-cyan-300">{result.feedback.summary}</p>
                                     <p>Time: {result.feedback.time_complexity}</p>
                                     <p>Space: {result.feedback.space_complexity}</p>
                                     {!!result.feedback.optimizations?.length && <p>Optimizations: {result.feedback.optimizations.join(' | ')}</p>}
+                                    {!!result.feedback.positives?.length && <p>Positives: {result.feedback.positives.join(' | ')}</p>}
+                                    {!!result.feedback.negatives?.length && <p>Needs work: {result.feedback.negatives.join(' | ')}</p>}
                                 </div>
                             )}
                             <div className="max-h-40 overflow-auto space-y-1">
@@ -378,11 +475,21 @@ export default function CodingRoundPage() {
                             {result.feedback?.summary && (
                                 <button
                                     onClick={() => speakFeedback(result.feedback?.summary || null)}
-                                    className="mt-1 rounded bg-slate-700 px-2 py-1 text-[11px] hover:bg-slate-600"
+                                    className="mt-1 rounded-lg bg-slate-800 px-3 py-1.5 text-[11px] hover:bg-slate-700"
                                 >
                                     Replay Feedback Voice
                                 </button>
                             )}
+                        </div>
+                    )}
+
+                    {latestReport && (
+                        <div className="mt-4 rounded-2xl border border-emerald-400/15 bg-emerald-500/10 p-4 text-xs space-y-2">
+                            <p className="text-sm font-semibold text-emerald-100">Submission Summary</p>
+                            <p className="text-slate-200">Runs before submission: {latestReport.run_count}</p>
+                            <p className="text-slate-200">Visible tests: {latestReport.visible_passed}/{latestReport.visible_total}</p>
+                            <p className="text-slate-200">Hidden tests: {latestReport.hidden_passed}/{latestReport.hidden_total}</p>
+                            <p className="text-slate-200">Code size: {latestReport.code_metrics?.non_empty_line_count || 0} non-empty lines</p>
                         </div>
                     )}
 
@@ -396,6 +503,18 @@ export default function CodingRoundPage() {
                     {error && <p className="text-rose-300 text-xs mt-3">{error}</p>}
                 </aside>
             </div>
+        </div>
+    );
+}
+
+function MetricBadge({ label, value, icon: Icon }: { label: string; value: string; icon: any }) {
+    return (
+        <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 backdrop-blur-lg">
+            <div className="flex items-center gap-2 text-slate-300">
+                <Icon size={14} className="text-cyan-300" />
+                <span className="text-[11px] uppercase tracking-[0.2em]">{label}</span>
+            </div>
+            <p className="mt-2 text-sm font-medium text-slate-100">{value}</p>
         </div>
     );
 }

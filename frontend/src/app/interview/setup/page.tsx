@@ -19,6 +19,7 @@ import ResumeUpload from '@/components/ResumeUpload';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3000';
 const MIN_LAUNCH_SCREEN_MS = 6500;
+const CODING_ENABLED_MODES = new Set<InterviewModeId>(['balanced', 'dsa_round', 'system_design', 'rapid_fire']);
 
 type InterviewModeId =
     | 'balanced'
@@ -32,6 +33,7 @@ type InterviewModeId =
 
 type DifficultyPreference = 'easy' | 'medium' | 'hard';
 type CoachStyle = 'supportive' | 'balanced' | 'strict';
+type PressureLevel = 'off' | 'moderate' | 'intense';
 
 const MODE_CONFIG: Array<{
     id: InterviewModeId;
@@ -110,7 +112,8 @@ export default function InterviewSetup() {
     const [targetQuestions, setTargetQuestions] = useState(5);
     const [difficultyPreference, setDifficultyPreference] = useState<DifficultyPreference>('medium');
     const [coachStyle, setCoachStyle] = useState<CoachStyle>('balanced');
-
+    const [liveCoachingEnabled, setLiveCoachingEnabled] = useState(true);
+    const [pressureLevel, setPressureLevel] = useState<PressureLevel>('off');
     const availableTopics = [
         'React',
         'Node.js',
@@ -135,6 +138,7 @@ export default function InterviewSetup() {
     ];
 
     const activeMode = useMemo(() => MODE_CONFIG.find((m) => m.id === selectedMode) || MODE_CONFIG[0], [selectedMode]);
+    const codingRoundEnabled = CODING_ENABLED_MODES.has(selectedMode);
 
     useEffect(() => {
         const qMode = String(searchParams.get('mode') || '').toLowerCase() as InterviewModeId;
@@ -186,7 +190,9 @@ export default function InterviewSetup() {
                 interviewMode: selectedMode,
                 targetQuestions,
                 difficultyPreference,
-                coachStyle
+                coachStyle,
+                liveCoachingEnabled,
+                pressureLevel
             }, {
                 headers: { Authorization: `Bearer ${session.access_token}` }
             });
@@ -274,7 +280,7 @@ export default function InterviewSetup() {
                     </div>
                 </div>
 
-                <div className="mb-8 grid grid-cols-1 gap-4 md:grid-cols-3">
+                <div className="mb-8 grid grid-cols-1 gap-4 md:grid-cols-4">
                     <div>
                         <label className="mb-2 block text-sm font-medium text-slate-400">Target Questions</label>
                         <select
@@ -309,6 +315,49 @@ export default function InterviewSetup() {
                             <option value="strict">Strict</option>
                         </select>
                     </div>
+                    <div>
+                        <label className="mb-2 block text-sm font-medium text-slate-400">Pressure Simulation</label>
+                        <select
+                            value={pressureLevel}
+                            onChange={(e) => setPressureLevel(e.target.value as PressureLevel)}
+                            className="w-full rounded-lg border border-white/15 bg-slate-900/70 px-3 py-2 text-slate-100"
+                        >
+                            <option value="off">Off</option>
+                            <option value="moderate">Moderate</option>
+                            <option value="intense">Intense</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div className="mb-8 rounded-xl border border-white/10 bg-white/5 p-4">
+                    <div className="flex items-start justify-between gap-4">
+                        <div>
+                            <p className="text-sm font-medium text-slate-100">Live Coaching Mode</p>
+                            <p className="mt-1 text-sm text-slate-300">
+                                Show immediate coaching cues during the interview based on your answer quality, pace, confidence, and question type.
+                            </p>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => setLiveCoachingEnabled((prev) => !prev)}
+                            className={`rounded-full border px-4 py-2 text-sm transition ${liveCoachingEnabled
+                                ? 'border-cyan-400/60 bg-cyan-500/15 text-cyan-100'
+                                : 'border-white/15 bg-white/5 text-slate-300 hover:border-white/30'}`}
+                        >
+                            {liveCoachingEnabled ? 'Enabled' : 'Disabled'}
+                        </button>
+                    </div>
+                </div>
+
+                <div className={`mb-8 rounded-xl border p-4 ${codingRoundEnabled
+                    ? 'border-emerald-400/20 bg-emerald-500/10'
+                    : 'border-amber-300/20 bg-amber-400/10'}`}>
+                    <p className="text-sm font-medium text-slate-100">Coding Round</p>
+                    <p className="mt-1 text-sm text-slate-300">
+                        {codingRoundEnabled
+                            ? 'This interview mode includes an in-session coding round after the spoken section.'
+                            : 'This interview mode is conversation-only. Coding round is automatically disabled for this mode.'}
+                    </p>
                 </div>
 
                 <div className="mb-8">

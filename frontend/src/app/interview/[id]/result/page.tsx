@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabaseClient';
 import axios from 'axios';
 import { CheckCircle, AlertTriangle, BookOpen, Share2, FileText } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
+import { AppLoadingScreen } from '@/components/AppLoadingScreen';
 
 export default function InterviewResult() {
     const params = useParams();
@@ -52,7 +53,18 @@ export default function InterviewResult() {
         completeSession();
     }, [params.id]);
 
-    if (loading) return <div className="app-shell text-white h-screen flex justify-center items-center">Generating Report...</div>;
+    if (loading) {
+        return (
+            <AppLoadingScreen
+                badge="Generating Report"
+                title="Turning your interview into a structured report"
+                description="We are finalizing the session and preparing the performance summary, topic breakdown, and improvement plan."
+                stageLabel="Generating results"
+                steps={['Ending the session', 'Calculating score breakdown', 'Preparing the result experience']}
+                compact
+            />
+        );
+    }
 
     return (
         <div className="app-shell text-white p-8 mb-20">

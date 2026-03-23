@@ -9,6 +9,7 @@ import { supabase } from '../config/supabase';
 
 const router = express.Router();
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+const CODING_ENABLED_MODES = new Set(['balanced', 'dsa_round', 'system_design', 'rapid_fire']);
 
 type CodingLanguage = 'Python' | 'Javascript' | 'Cpp' | 'Java' | 'Sql';
 
@@ -30,6 +31,10 @@ interface GeneratedChallenge {
 
 const SUPPORTED_LANGUAGES: CodingLanguage[] = ['Python', 'Javascript', 'Cpp', 'Java', 'Sql'];
 const challengeCache = new Map<string, GeneratedChallenge>();
+
+function codingEnabledForMode(mode: any) {
+    return CODING_ENABLED_MODES.has(String(mode || 'balanced').trim().toLowerCase());
+}
 
 function normalizeOutput(s: string) {
     return (s || '').trim().replace(/\r\n/g, '\n');
@@ -198,6 +203,50 @@ function cacheKey(sessionId: string, challengeId: string) {
     return `${sessionId}:${challengeId}`;
 }
 
+function buildCodeMetrics(code: string) {
+    const lines = String(code || '').split(/\r?\n/);
+    return {
+        line_count: lines.length,
+        non_empty_line_count: lines.filter((line) => line.trim().length > 0).length,
+        character_count: String(code || '').length
+    };
+}
+
+async function updateCodingSessionContext(sessionId: string, userId: string, updater: (context: any) => any) {
+    const { data: sessionRow, error: sessionReadError } = await supabase
+        .from('interview_sessions')
+        .select('id, user_id, conversation_context')
+        .eq('id', sessionId)
+        .single();
+
+    if (sessionReadError) {
+        console.error('Failed to load session for coding context update:', sessionReadError);
+        return null;
+    }
+
+    if (sessionRow?.user_id && sessionRow.user_id !== userId) {
+        return null;
+    }
+
+    const existingContext =
+        sessionRow?.conversation_context && typeof sessionRow.conversation_context === 'object'
+            ? sessionRow.conversation_context
+            : {};
+
+    const updatedContext = updater(existingContext);
+
+    const { error: sessionUpdateError } = await supabase
+        .from('interview_sessions')
+        .update({ conversation_context: updatedContext })
+        .eq('id', sessionId);
+
+    if (sessionUpdateError) {
+        console.error('Failed to persist coding round into session context:', sessionUpdateError);
+    }
+
+    return updatedContext;
+}
+
 router.get('/challenge', authenticate, async (req: AuthRequest, res) => {
     const sessionId = String(req.query.session_id || '');
     const round = Number(req.query.round || 1);
@@ -221,6 +270,13 @@ router.get('/challenge', authenticate, async (req: AuthRequest, res) => {
         }
         if (session?.user_id && req.user?.id && session.user_id !== req.user.id) {
             return res.status(403).json({ error: 'You are not allowed to access this interview session' });
+        }
+
+        const interviewMode = String(session?.conversation_context?.interview_mode || 'balanced');
+        if (!codingEnabledForMode(interviewMode)) {
+            return res.status(400).json({
+                error: `Coding round is disabled for ${interviewMode.replace(/_/g, ' ')} mode`
+            });
         }
 
         let resumeText = '';
@@ -312,13 +368,22 @@ router.post('/run', authenticate, async (req: AuthRequest, res) => {
         return res.status(400).json({ error: 'Unsupported language' });
     }
 
-    const challenge = challengeCache.get(cacheKey(String(session_id), String(challenge_id)));
+        const challenge = challengeCache.get(cacheKey(String(session_id), String(challenge_id)));
     if (!challenge) {
         return res.status(400).json({ error: 'Challenge not found. Please refresh coding round.' });
     }
 
     try {
-        const results = [];
+        const results: Array<{
+            input: string;
+            expected: string;
+            passed: boolean;
+            output: string;
+            expectedNormalized: string;
+            stderr: string;
+            code: number;
+            signal: any;
+        }> = [];
         for (const testCase of challenge.visible_tests) {
             const result = await executeAgainstCase(language, code, testCase);
             results.push({ input: testCase.input, expected: testCase.expected, ...result });
@@ -326,11 +391,35 @@ router.post('/run', authenticate, async (req: AuthRequest, res) => {
         }
 
         const passedCount = results.filter((r: any) => r.passed).length;
+
+        const updatedContext = await updateCodingSessionContext(String(session_id), req.user.id, (existingContext: any) => {
+            const previousDraft = existingContext?.coding_round_draft || {};
+            return {
+                ...existingContext,
+                coding_round_draft: {
+                    ...previousDraft,
+                    challenge_id: challenge.id,
+                    title: challenge.title,
+                    prompt: challenge.prompt,
+                    language,
+                    run_count: Number(previousDraft?.run_count || 0) + 1,
+                    last_run_at: new Date().toISOString(),
+                    last_run: {
+                        passed: passedCount,
+                        total: challenge.visible_tests.length,
+                        results
+                    },
+                    code_metrics: buildCodeMetrics(code)
+                }
+            };
+        });
+
         return res.json({
             mode: 'run',
             passed: passedCount,
             total: challenge.visible_tests.length,
-            results
+            results,
+            run_count: Number(updatedContext?.coding_round_draft?.run_count || 0)
         });
     } catch (error: any) {
         console.error('POST /coding/run failed:', error?.message || error);
@@ -369,6 +458,9 @@ router.post('/submit', authenticate, async (req: AuthRequest, res) => {
         const passedCount = detailedResults.filter((r: any) => r.passed).length;
         const total = allTests.length;
         const allPassed = passedCount === total;
+        const visibleResults = detailedResults.filter((result: any) => !result.hidden);
+        const hiddenResults = detailedResults.filter((result: any) => result.hidden);
+        const codeMetrics = buildCodeMetrics(code);
 
         let aiFeedback: any = {
             summary: allPassed ? 'Great job. All tests passed.' : `You passed ${passedCount}/${total} tests.`,
@@ -408,6 +500,22 @@ router.post('/submit', authenticate, async (req: AuthRequest, res) => {
             audio_base64 = null;
         }
 
+        const { data: sessionRow } = await supabase
+            .from('interview_sessions')
+            .select('conversation_context')
+            .eq('id', String(session_id))
+            .single();
+
+        const existingContext =
+            sessionRow?.conversation_context && typeof sessionRow.conversation_context === 'object'
+                ? sessionRow.conversation_context
+                : {};
+        const previousDraft = existingContext?.coding_round_draft || {};
+        const existingHistory = Array.isArray(existingContext?.coding_round_history)
+            ? existingContext.coding_round_history
+            : [];
+        const priorSubmissionsForChallenge = existingHistory.filter((item: any) => item?.challenge_id === challenge.id).length;
+
         const codingRoundReport = {
             challenge_id: challenge.id,
             title: challenge.title,
@@ -416,48 +524,31 @@ router.post('/submit', authenticate, async (req: AuthRequest, res) => {
             passed: passedCount,
             total,
             all_passed: allPassed,
+            run_count: Number(previousDraft?.run_count || 0),
+            submit_count: priorSubmissionsForChallenge + 1,
+            visible_passed: visibleResults.filter((result: any) => result.passed).length,
+            visible_total: visibleResults.length,
+            hidden_passed: hiddenResults.filter((result: any) => result.passed).length,
+            hidden_total: hiddenResults.length,
+            completed_test_cases: detailedResults.length,
+            code_metrics: codeMetrics,
             results: detailedResults,
             feedback: aiFeedback,
             submitted_at: new Date().toISOString()
         };
 
         try {
-            const { data: sessionRow, error: sessionReadError } = await supabase
-                .from('interview_sessions')
-                .select('id, user_id, conversation_context')
-                .eq('id', String(session_id))
-                .single();
-
-            if (sessionReadError) {
-                console.error('Failed to load session for coding report persistence:', sessionReadError);
-            } else if (!sessionRow?.user_id || sessionRow.user_id === req.user.id) {
-                const existingContext =
-                    sessionRow?.conversation_context && typeof sessionRow.conversation_context === 'object'
-                        ? sessionRow.conversation_context
-                        : {};
-                const existingHistory = Array.isArray((existingContext as any).coding_round_history)
-                    ? (existingContext as any).coding_round_history
+            await updateCodingSessionContext(String(session_id), req.user.id, (currentContext: any) => {
+                const history = Array.isArray(currentContext?.coding_round_history)
+                    ? currentContext.coding_round_history
                     : [];
-                const coding_round_history = [
-                    ...existingHistory.filter((item: any) => item?.challenge_id !== challenge.id),
-                    codingRoundReport
-                ];
-
-                const updatedContext = {
-                    ...(existingContext as any),
+                return {
+                    ...currentContext,
                     coding_round: codingRoundReport,
-                    coding_round_history
+                    coding_round_history: [...history, codingRoundReport].slice(-5),
+                    coding_round_draft: null
                 };
-
-                const { error: sessionUpdateError } = await supabase
-                    .from('interview_sessions')
-                    .update({ conversation_context: updatedContext })
-                    .eq('id', String(session_id));
-
-                if (sessionUpdateError) {
-                    console.error('Failed to persist coding round into session context:', sessionUpdateError);
-                }
-            }
+            });
         } catch (persistErr) {
             console.error('Unexpected coding report persistence error:', persistErr);
         }

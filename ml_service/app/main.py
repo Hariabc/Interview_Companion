@@ -5,7 +5,7 @@ from typing import List, Optional
 import shutil
 import os
 from app.services.resume_parser import parse_resume_pdf
-from app.services.scorer import score_answer_text
+from app.services.scorer import score_answer_text, rewrite_answer_text
 from app.services.audio_analyzer import analyze_audio_file
 from app.services.adaptive import suggest_next_difficulty
 from app.services.generator import generate_interview_questions
@@ -39,6 +39,13 @@ class ScoreRequest(BaseModel):
 class DifficultyRequest(BaseModel):
     current_difficulty: int
     last_score: float
+
+class RewriteRequest(BaseModel):
+    answer_text: str
+    question_text: str
+    ideal_keywords: Optional[List[str]] = None
+    ideal_answer_text: Optional[str] = None
+    feedback_text: Optional[str] = None
 
 class QuestionParams(BaseModel):
     resume_text: str
@@ -117,6 +124,20 @@ async def analyze_audio(file: UploadFile = File(...)):
 def suggest_difficulty(request: DifficultyRequest):
     new_difficulty = suggest_next_difficulty(request.current_difficulty, request.last_score)
     return {"suggested_difficulty": new_difficulty}
+
+@app.post("/rewrite_answer")
+def rewrite_answer(request: RewriteRequest):
+    if not request.answer_text or not request.question_text:
+        raise HTTPException(status_code=400, detail="answer_text and question_text are required")
+
+    result = rewrite_answer_text(
+        answer_text=request.answer_text,
+        question_text=request.question_text,
+        ideal_answer_text=request.ideal_answer_text,
+        ideal_keywords=request.ideal_keywords,
+        feedback_text=request.feedback_text
+    )
+    return result
 
 @app.post("/generate_questions")
 def generate_questions(params: QuestionParams):
