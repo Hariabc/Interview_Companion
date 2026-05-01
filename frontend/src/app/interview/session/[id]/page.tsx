@@ -3,7 +3,18 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import axios from 'axios';
-import { Volume2, Loader2, Send, X, Sparkles } from 'lucide-react';
+import {
+    Camera,
+    CameraOff,
+    Loader2,
+    Mic,
+    MicOff,
+    Send,
+    Sparkles,
+    Video,
+    Volume2,
+    X
+} from 'lucide-react';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3000';
 const ML_URL = process.env.NEXT_PUBLIC_ML_URL || 'http://localhost:8000';
@@ -41,6 +52,7 @@ interface AdaptiveDecision {
 
 type CoachStyleMode = 'supportive' | 'balanced' | 'strict';
 type PressureLevel = 'off' | 'moderate' | 'intense';
+type CameraStatus = 'requesting' | 'ready' | 'blocked' | 'unsupported';
 
 const SILENCE_THRESHOLD = 0.02;
 const SILENCE_HOLD_MS = 5000;
@@ -201,8 +213,12 @@ export default function InterviewSession() {
     const [coachStyleMode, setCoachStyleMode] = useState<CoachStyleMode>('balanced');
     const [liveCoachingCues, setLiveCoachingCues] = useState<string[]>([]);
     const [pressureLevel, setPressureLevel] = useState<PressureLevel>('off');
+    const [cameraStatus, setCameraStatus] = useState<CameraStatus>('requesting');
+    const [cameraEnabled, setCameraEnabled] = useState(true);
 
     const audioRef = useRef<HTMLAudioElement | null>(null);
+    const videoRef = useRef<HTMLVideoElement | null>(null);
+    const cameraStreamRef = useRef<MediaStream | null>(null);
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const streamRef = useRef<MediaStream | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
@@ -371,6 +387,7 @@ export default function InterviewSession() {
             pendingTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
             pendingTimeoutsRef.current = [];
             cleanupRecorderResources();
+            cleanupCameraResources();
             if (audioRef.current) {
                 audioRef.current.pause();
                 audioRef.current.src = '';
@@ -398,6 +415,62 @@ export default function InterviewSession() {
         }, 1000);
         return () => window.clearInterval(interval);
     }, []);
+
+    useEffect(() => {
+        void requestCameraAccess();
+
+        return () => {
+            cleanupCameraResources();
+        };
+    }, []);
+
+    useEffect(() => {
+        if (videoRef.current && cameraStreamRef.current && cameraEnabled) {
+            videoRef.current.srcObject = cameraStreamRef.current;
+        }
+    }, [cameraEnabled, cameraStatus]);
+
+    const cleanupCameraResources = () => {
+        if (cameraStreamRef.current) {
+            cameraStreamRef.current.getTracks().forEach((track) => track.stop());
+            cameraStreamRef.current = null;
+        }
+        if (videoRef.current) {
+            videoRef.current.srcObject = null;
+        }
+    };
+
+    const requestCameraAccess = async () => {
+        if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+            setCameraStatus('unsupported');
+            setCameraEnabled(false);
+            return;
+        }
+
+        setCameraStatus('requesting');
+        try {
+            cleanupCameraResources();
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                    facingMode: 'user'
+                },
+                audio: false
+            });
+            cameraStreamRef.current = stream;
+            setCameraEnabled(true);
+            setCameraStatus('ready');
+            if (videoRef.current) {
+                videoRef.current.srcObject = stream;
+                await videoRef.current.play().catch(() => undefined);
+            }
+        } catch (err) {
+            console.error('Camera permission error:', err);
+            setCameraStatus('blocked');
+            setCameraEnabled(false);
+        }
+    };
 
     const cleanupRecorderResources = () => {
         if (recordingIntervalRef.current) {
@@ -1248,9 +1321,9 @@ export default function InterviewSession() {
         return {
             question: {
                 id: `local-fallback-${Date.now()}`,
-                question_text: 'Let us continue with a technical follow-up. Explain a recent problem you solved, your approach, and the time-space trade-offs.',
-                topic: 'Data Structures and Algorithms',
-                difficulty: 3
+                question_text: 'Let us continue with something simple. Pick one recent task you worked on and explain your approach clearly.',
+                topic: 'Problem Solving',
+                difficulty: 2
             },
             adaptiveDecision: null
         };
@@ -1667,277 +1740,325 @@ export default function InterviewSession() {
     ];
 
     return (
-        <div className="app-shell relative flex flex-col overflow-hidden animate-panel-in">
-            <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(120deg,rgba(56,189,248,0.06)_0%,rgba(15,23,42,0)_30%,rgba(34,197,94,0.04)_100%)]" />
-            <div className="pointer-events-none absolute -left-24 top-24 h-56 w-56 rounded-full bg-cyan-500/20 blur-3xl" />
-            <div className="pointer-events-none absolute -right-24 top-40 h-64 w-64 rounded-full bg-blue-500/20 blur-3xl" />
-            <div className="pointer-events-none absolute left-1/2 top-1/3 h-72 w-72 -translate-x-1/2 rounded-full bg-indigo-500/10 blur-3xl" />
+        <div className="min-h-screen bg-[#111111] text-zinc-100 animate-panel-in">
+            <header className="flex min-h-[64px] items-center justify-between border-b border-white/10 bg-[#181818] px-4 py-3 md:px-6">
+                <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#2d8cff] text-white">
+                        <Video size={21} />
+                    </div>
+                    <div className="min-w-0">
+                        <h1 className="truncate text-base font-semibold text-white">Interview Meeting</h1>
+                        <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+                            <span>Session {sessionId?.toString().slice(0, 8)}</span>
+                            <span className="hidden h-1 w-1 rounded-full bg-zinc-600 sm:inline-block" />
+                            <span suppressHydrationWarning>{clockText}</span>
+                            {phase === 'questioning' && (
+                                <>
+                                    <span className="hidden h-1 w-1 rounded-full bg-zinc-600 sm:inline-block" />
+                                    <span>Question {currentQuestionIndex + 1} of {Math.max(questions.length, 1)}</span>
+                                </>
+                            )}
+                        </div>
+                    </div>
+                </div>
 
-            <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950/70 px-4 py-4 backdrop-blur md:px-6">
-                <div className="mx-auto flex w-full max-w-[1400px] flex-wrap items-center justify-between gap-3">
-                    <div className="flex items-center gap-4">
-                        <div className="h-9 w-9 rounded-lg bg-gradient-to-br from-cyan-400 to-blue-500 shadow-lg shadow-cyan-500/20" />
-                        <div>
-                            <h1 className="text-lg font-semibold tracking-wide" style={{ fontFamily: 'var(--font-space-grotesk), sans-serif' }}>Interview Studio</h1>
-                            <p className="text-xs text-slate-400">Session {sessionId?.toString().slice(0, 8)}</p>
-                        </div>
-                        <span className="hidden rounded-full border border-emerald-300/35 bg-emerald-500/15 px-2.5 py-1 text-[11px] uppercase tracking-wider text-emerald-200 md:inline-flex">
-                            Live
-                        </span>
-                        {phase === 'questioning' && (
-                            <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs text-slate-200">
-                                Question {currentQuestionIndex + 1} / {Math.max(questions.length, 1)}
-                            </span>
-                        )}
-                    </div>
                     <div className="flex items-center gap-2">
-                        {process.env.NODE_ENV !== 'production' && (
-                            <button
-                                onClick={() => startCodingRound(null)}
-                                className="rounded-full border border-amber-300/60 bg-amber-500/15 px-3 py-1 text-xs text-amber-100 transition hover:bg-amber-500/25"
-                            >
-                                Go To Coding (Test)
-                            </button>
-                        )}
-                        <div className={`rounded-full border px-3 py-1 text-xs transition-all duration-300 ${turn === 'ai'
-                            ? 'border-cyan-400/50 bg-cyan-500/15 text-cyan-200'
-                            : 'border-emerald-400/50 bg-emerald-500/15 text-emerald-200'
-                            } ${turn === 'ai' ? 'animate-live-pulse' : ''}`}>
-                            {turn === 'ai' ? 'AI Speaking Turn' : 'Your Speaking Turn'}
-                        </div>
+                    {process.env.NODE_ENV !== 'production' && (
                         <button
-                            onClick={endInterviewNow}
-                            className="rounded-full border border-rose-400/70 bg-rose-500/15 px-3 py-1 text-xs text-rose-200 transition hover:bg-rose-500/30"
+                            onClick={() => startCodingRound(null)}
+                            className="hidden rounded-md border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-100 transition hover:bg-amber-500/20 md:inline-flex"
                         >
-                            End Interview
+                            Coding Test
                         </button>
-                        <button
-                            onClick={() => router.push('/dashboard')}
-                            className="rounded-full border border-white/15 p-1.5 text-slate-300 transition hover:bg-white/10 hover:text-white"
-                        >
-                            <X size={18} />
-                        </button>
-                    </div>
+                    )}
+                    <span className={`hidden items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium md:inline-flex ${turn === 'ai'
+                        ? 'border-sky-400/40 bg-sky-500/10 text-sky-100'
+                        : 'border-emerald-400/40 bg-emerald-500/10 text-emerald-100'
+                        }`}>
+                        <span className={`h-2 w-2 rounded-full ${turn === 'ai' ? 'bg-sky-300' : 'bg-emerald-300'}`} />
+                        {turn === 'ai' ? 'Interviewer speaking' : 'Candidate speaking'}
+                    </span>
+                    <button
+                        onClick={endInterviewNow}
+                        className="hidden rounded-md bg-[#d93025] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#c5221f] sm:inline-flex"
+                    >
+                        End Interview
+                    </button>
+                    <button
+                        onClick={() => router.push('/dashboard')}
+                        aria-label="Close meeting"
+                        title="Close"
+                        className="flex h-10 w-10 items-center justify-center rounded-md border border-white/10 bg-white/5 text-zinc-300 transition hover:bg-white/10 hover:text-white"
+                    >
+                        <X size={18} />
+                    </button>
                 </div>
             </header>
 
-            <main className="mx-auto grid w-full max-w-[1400px] flex-1 grid-cols-1 gap-4 p-4 lg:grid-cols-12 lg:p-6">
-                <section className="glass-card lg:col-span-8 p-4 md:p-6 shadow-[0_30px_90px_-45px_rgba(56,189,248,0.45)]">
-                    <div className="mb-4 flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/60 px-4 py-3">
-                        <div>
-                            <p className="text-sm font-medium text-slate-200">Live Interview Room</p>
-                            <p className="text-[11px] text-slate-400">Natural turn-based conversation</p>
-                        </div>
-                        <p suppressHydrationWarning className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300">{clockText}</p>
-                    </div>
-
-                    <div className="grid min-h-[320px] grid-cols-1 gap-4 md:grid-cols-2">
-                        <div className={`relative flex min-h-[320px] flex-col overflow-hidden rounded-2xl border border-cyan-500/30 bg-gradient-to-br from-cyan-950/80 via-slate-900 to-blue-950/70 p-4 transition-all duration-500 ${turn === 'ai'
-                            ? 'ring-2 ring-cyan-300/35 shadow-[0_0_45px_-20px_rgba(34,211,238,0.7)]'
-                            : 'opacity-90'
+            <main className="grid min-h-[calc(100vh-144px)] grid-cols-1 gap-0 lg:grid-cols-[1fr_380px]">
+                <section className="flex min-h-[560px] flex-col bg-[#111111]">
+                    <div className="grid flex-1 grid-cols-1 gap-3 p-3 md:grid-cols-2 md:p-5">
+                        <div className={`relative min-h-[280px] overflow-hidden rounded-lg border bg-[#202020] shadow-2xl transition ${turn === 'ai'
+                            ? 'border-sky-400/70 ring-2 ring-sky-400/25'
+                            : 'border-white/10'
                             }`}>
-                            <div className="absolute right-4 top-4 text-cyan-300/40">
-                                <Volume2 size={28} />
-                            </div>
-                            <p className="mb-3 text-xs uppercase tracking-wider text-cyan-200/70">AI Interviewer</p>
-                            <div className="relative mx-auto flex h-[252px] w-full max-w-[206px] items-center justify-center overflow-hidden rounded-2xl border border-cyan-400/15 bg-[radial-gradient(circle_at_top,rgba(34,211,238,0.16),transparent_38%),linear-gradient(180deg,rgba(15,23,42,0.82),rgba(8,15,30,0.95))]">
-                                <div className="absolute inset-x-8 top-5 h-24 rounded-full bg-cyan-400/10 blur-3xl" />
-                                <div className={`relative flex h-24 w-24 items-center justify-center rounded-3xl border border-cyan-300/25 bg-cyan-400/10 transition ${isPlayingAudio ? 'shadow-[0_0_40px_-12px_rgba(34,211,238,0.8)]' : ''}`}>
-                                    <Volume2 size={40} className={`text-cyan-200 ${isPlayingAudio ? 'animate-pulse' : ''}`} />
+                            <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_20%,rgba(14,165,233,0.22),transparent_34%),linear-gradient(145deg,#242424,#151515)]" />
+                            <div className="relative flex h-full min-h-[280px] flex-col items-center justify-center p-6 text-center">
+                                <div className={`flex h-28 w-28 items-center justify-center rounded-full border border-sky-300/25 bg-sky-500/15 ${isPlayingAudio ? 'animate-live-pulse' : ''}`}>
+                                    <Volume2 size={44} className={isPlayingAudio ? 'text-sky-200' : 'text-zinc-300'} />
                                 </div>
-                                <div className="absolute bottom-5 left-1/2 h-3 w-28 -translate-x-1/2 rounded-full bg-slate-950/70 blur-md" />
-                            </div>
-                            <div className="mt-4">
-                                <h2 className="text-xl font-bold text-white" style={{ fontFamily: 'var(--font-space-grotesk), sans-serif' }}>
-                                    AI Interviewer
-                                </h2>
-                                <p className="mt-1 text-sm text-cyan-100/70">
-                                    Professional interviewer mode with adaptive questioning, live evaluation, and real-time turn guidance.
-                                </p>
-                            </div>
-
-                            <div className="mt-auto flex items-center gap-3 pt-10">
-                                <div className={`h-3.5 w-3.5 rounded-full ${isPlayingAudio ? 'bg-cyan-300 animate-pulse' : 'bg-cyan-900 border border-cyan-500'}`} />
-                                <p className="text-sm text-cyan-100/90">{isPlayingAudio ? 'Speaking live' : turn === 'user' && isRecording ? 'Listening to your answer' : 'Standing by'}</p>
-                                <span className={`voice-bars ${isPlayingAudio ? 'opacity-100' : 'opacity-35'}`}>
-                                    <span className="voice-bar bg-cyan-300" />
-                                    <span className="voice-bar bg-cyan-300" />
-                                    <span className="voice-bar bg-cyan-300" />
-                                    <span className="voice-bar bg-cyan-300" />
-                                </span>
-                            </div>
-                            <div className={`pointer-events-none absolute -bottom-20 -right-12 h-44 w-44 rounded-full bg-cyan-400/20 blur-2xl ${isPlayingAudio ? 'animate-pulse' : ''}`} />
-                        </div>
-
-                        <div className={`relative flex min-h-[320px] flex-col overflow-hidden rounded-2xl border border-emerald-500/30 bg-gradient-to-br from-emerald-950/70 via-slate-900 to-slate-900 p-6 transition-all duration-500 ${turn === 'user'
-                            ? 'ring-2 ring-emerald-300/35 shadow-[0_0_45px_-20px_rgba(16,185,129,0.7)]'
-                            : 'opacity-90'
-                            }`}>
-                            <div className="absolute right-4 top-4 text-emerald-300/40">
-                                <Sparkles size={22} />
-                            </div>
-                            <p className="text-xs uppercase tracking-wider text-emerald-200/70">Candidate</p>
-                            <h2 className="mt-1 text-xl font-bold" style={{ fontFamily: 'var(--font-space-grotesk), sans-serif' }}>You</h2>
-                            <div className="mt-5 space-y-2">
-                                <div className="flex items-center gap-3">
-                                    <div className={`h-3.5 w-3.5 rounded-full ${isRecording ? 'bg-rose-400 animate-pulse' : 'bg-emerald-900 border border-emerald-500'}`} />
-                                    <p className="text-sm text-emerald-100/90">
-                                        {isRecording ? `Listening ${formatTime(recordingTime)}` : 'Waiting for your turn'}
-                                    </p>
-                                    <span className={`voice-bars ${isRecording ? 'opacity-100' : 'opacity-35'}`}>
-                                        {userWaveScales.map((scale, idx) => (
-                                            <span
-                                                key={idx}
-                                                className="voice-bar bg-emerald-300"
-                                                style={{
-                                                    animation: 'none',
-                                                    transform: `scaleY(${isRecording ? scale : 0.28})`,
-                                                    transition: 'transform 110ms linear, opacity 160ms ease'
-                                                }}
-                                            />
-                                        ))}
+                                <h2 className="mt-5 text-xl font-semibold text-white">AI Interviewer</h2>
+                                <div className="mt-3 flex items-center gap-2 rounded-md bg-black/35 px-3 py-1.5 text-sm text-zinc-200">
+                                    <span className={`h-2.5 w-2.5 rounded-full ${isPlayingAudio ? 'bg-sky-300' : 'bg-zinc-500'}`} />
+                                    {isPlayingAudio ? 'Speaking' : turn === 'user' && isRecording ? 'Listening' : 'Ready'}
+                                    <span className={`voice-bars ml-1 ${isPlayingAudio ? 'opacity-100' : 'opacity-30'}`}>
+                                        <span className="voice-bar bg-sky-300" />
+                                        <span className="voice-bar bg-sky-300" />
+                                        <span className="voice-bar bg-sky-300" />
+                                        <span className="voice-bar bg-sky-300" />
                                     </span>
                                 </div>
-                                <p className="text-xs leading-relaxed text-emerald-100/65">
-                                    Microphone starts automatically on your turn. You can also type if needed.
-                                </p>
                             </div>
-                            <div className="mt-auto" />
-                            <div className={`pointer-events-none absolute -bottom-16 -left-10 h-36 w-36 rounded-full bg-emerald-400/15 blur-2xl ${isRecording ? 'animate-pulse' : ''}`} />
+                            <div className="absolute bottom-3 left-3 flex items-center gap-2 rounded bg-black/55 px-2.5 py-1.5 text-sm font-medium text-white backdrop-blur">
+                                <Volume2 size={15} />
+                                Interviewer
+                            </div>
+                        </div>
+
+                        <div className={`relative min-h-[280px] overflow-hidden rounded-lg border bg-[#202020] shadow-2xl transition ${turn === 'user'
+                            ? 'border-emerald-400/70 ring-2 ring-emerald-400/25'
+                            : 'border-white/10'
+                            }`}>
+                            {cameraStatus === 'ready' && cameraEnabled ? (
+                                <video
+                                    ref={videoRef}
+                                    className="h-full min-h-[280px] w-full object-cover"
+                                    autoPlay
+                                    muted
+                                    playsInline
+                                />
+                            ) : (
+                                <div className="flex h-full min-h-[280px] flex-col items-center justify-center bg-[linear-gradient(145deg,#252525,#161616)] p-6 text-center">
+                                    <div className="flex h-28 w-28 items-center justify-center rounded-full border border-white/10 bg-white/5">
+                                        {cameraStatus === 'requesting' ? (
+                                            <Loader2 size={42} className="animate-spin text-zinc-300" />
+                                        ) : (
+                                            <CameraOff size={42} className="text-zinc-300" />
+                                        )}
+                                    </div>
+                                    <h2 className="mt-5 text-xl font-semibold text-white">You</h2>
+                                    <p className="mt-2 max-w-xs text-sm text-zinc-400">
+                                        {cameraStatus === 'requesting'
+                                            ? 'Camera permission requested'
+                                            : cameraStatus === 'blocked'
+                                                ? 'Camera permission blocked'
+                                                : cameraStatus === 'unsupported'
+                                                    ? 'Camera unavailable'
+                                                    : 'Camera off'}
+                                    </p>
+                                    {cameraStatus !== 'requesting' && (
+                                        <button
+                                            onClick={requestCameraAccess}
+                                            className="mt-4 inline-flex items-center gap-2 rounded-md bg-[#2d8cff] px-4 py-2 text-sm font-medium text-white transition hover:bg-[#1f7ae0]"
+                                        >
+                                            <Camera size={16} />
+                                            Enable camera
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+
+                            <div className="absolute left-3 top-3 flex items-center gap-2 rounded-md border border-white/10 bg-black/55 px-3 py-1.5 text-sm text-white backdrop-blur">
+                                {isRecording ? <Mic size={15} className="text-emerald-300" /> : <MicOff size={15} className="text-zinc-300" />}
+                                {isRecording ? formatTime(recordingTime) : 'Muted'}
+                                <span className={`voice-bars ${isRecording ? 'opacity-100' : 'opacity-25'}`}>
+                                    {userWaveScales.map((scale, idx) => (
+                                        <span
+                                            key={idx}
+                                            className="voice-bar bg-emerald-300"
+                                            style={{
+                                                animation: 'none',
+                                                transform: `scaleY(${isRecording ? scale : 0.28})`,
+                                                transition: 'transform 110ms linear, opacity 160ms ease'
+                                            }}
+                                        />
+                                    ))}
+                                </span>
+                            </div>
+                            <div className="absolute bottom-3 left-3 flex items-center gap-2 rounded bg-black/55 px-2.5 py-1.5 text-sm font-medium text-white backdrop-blur">
+                                {cameraStatus === 'ready' && cameraEnabled ? <Camera size={15} /> : <CameraOff size={15} />}
+                                Candidate
+                            </div>
                         </div>
                     </div>
+
                 </section>
 
-                <aside className="glass-card lg:col-span-4 flex flex-col p-4 md:p-5 shadow-[0_30px_90px_-55px_rgba(59,130,246,0.45)]">
-                    <div className="mb-4 rounded-xl border border-white/10 bg-slate-950/65 p-4 animate-panel-in">
-                        <p className="mb-2 text-xs uppercase tracking-wider text-slate-400">Current Prompt</p>
-                        <div className="min-h-[130px] rounded-lg border border-white/10 bg-slate-900/60 p-3 transition-all duration-300">
-                            {phase === 'ai_intro' && <p className="text-slate-200">{aiIntroText || 'Preparing introduction...'}</p>}
-                            {phase === 'user_intro' && (
-                                <p className="text-slate-200">Your turn: introduce yourself, your experience, and what you are looking for.</p>
-                            )}
-                            {phase === 'questioning' && currentQuestion && (
-                                <p className="text-base leading-relaxed text-slate-100">{currentQuestion.question_text}</p>
-                            )}
+                <aside className="flex min-h-[560px] flex-col border-l border-white/10 bg-[#1f1f1f]">
+                    <div className="border-b border-white/10 px-5 py-4">
+                        <div className="flex items-center justify-between gap-3">
+                            <div>
+                                <h2 className="text-sm font-semibold text-white">Interview Console</h2>
+                                <p className="mt-1 text-xs text-zinc-400">
+                                    {pressureLevel !== 'off' ? getPressureConfig(pressureLevel).label : 'Standard session'}
+                                </p>
+                            </div>
+                            {loading && <Loader2 className="animate-spin text-sky-300" size={18} />}
                         </div>
                     </div>
-                    {sessionNotice && (
-                        <div className="mb-4 rounded-xl border border-cyan-500/30 bg-cyan-950/25 p-3 animate-panel-in">
-                            <p className="text-sm text-cyan-100">{sessionNotice}</p>
-                        </div>
-                    )}
-                    {pressureLevel !== 'off' && (
-                        <div className="mb-4 rounded-xl border border-rose-500/25 bg-rose-950/20 p-3 animate-panel-in">
-                            <div className="flex items-center justify-between gap-3">
-                                <p className="text-sm font-semibold text-rose-300">{getPressureConfig(pressureLevel).label}</p>
-                                <span className="text-[11px] uppercase tracking-wider text-rose-200/80">
-                                    Answer Window {Math.round(getPressureConfig(pressureLevel).maxRecordingMs / 1000)}s
-                                </span>
-                            </div>
-                            <p className="mt-2 text-sm text-slate-200">{getPressureConfig(pressureLevel).banner}</p>
-                        </div>
-                    )}
-                    {error && (
-                        <div className="mb-4 rounded-xl border border-rose-500/35 bg-rose-950/30 p-3 animate-panel-in">
-                            <div className="flex items-start justify-between gap-3">
-                                <p className="text-sm text-rose-100">{error}</p>
-                                <button
-                                    onClick={() => setError(null)}
-                                    className="rounded border border-rose-400/40 px-2 py-0.5 text-[11px] text-rose-200 transition hover:bg-rose-500/20"
-                                >
-                                    Dismiss
-                                </button>
-                            </div>
-                        </div>
-                    )}
 
-                    {loading && (
-                        <div className="mb-4 flex items-center gap-3 rounded-xl border border-cyan-500/25 bg-cyan-950/25 p-3 animate-panel-in">
-                            <Loader2 className="animate-spin text-cyan-300" size={18} />
-                            <p className="text-sm text-cyan-100">Analyzing your response...</p>
-                        </div>
-                    )}
-
-                    {feedback && (
-                        <div className="mb-4 rounded-xl border border-emerald-500/25 bg-emerald-950/20 p-4 animate-panel-in">
-                            <div className="flex items-center justify-between">
-                                <p className="text-sm font-semibold text-emerald-300">Evaluation</p>
-                                <p className="text-2xl font-bold text-white">{feedback.final_score}</p>
+                    <div className="flex-1 space-y-4 overflow-y-auto p-5">
+                        <section className="rounded-lg border border-white/10 bg-[#282828] p-4">
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                                <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Current Prompt</p>
+                                {currentQuestion?.difficulty && (
+                                    <span className="rounded bg-white/10 px-2 py-1 text-xs text-zinc-300">Level {currentQuestion.difficulty}</span>
+                                )}
                             </div>
-                            <p className="mt-2 text-sm text-slate-200">{feedback.feedback_text}</p>
-                        </div>
-                    )}
+                            {phase === 'ai_intro' && <p className="text-sm leading-6 text-zinc-100">{aiIntroText || 'Preparing introduction...'}</p>}
+                            {phase === 'user_intro' && (
+                                <p className="text-sm leading-6 text-zinc-100">Introduce yourself, your experience, and what you are looking for.</p>
+                            )}
+                            {phase === 'questioning' && currentQuestion && (
+                                <p className="text-sm leading-6 text-zinc-100">{currentQuestion.question_text}</p>
+                            )}
+                        </section>
 
-                    {liveCoachingEnabled && (isRecording || liveCoachingCues.length > 0) && (
-                        <div className="mb-4 rounded-xl border border-amber-500/25 bg-amber-950/20 p-4 animate-panel-in">
-                            <div className="flex items-center justify-between gap-3">
-                                <p className="text-sm font-semibold text-amber-300">Live Coach</p>
-                                <span className="text-[11px] uppercase tracking-wider text-amber-200/80">
-                                    {isRecording ? 'Active' : 'Latest Cues'}
-                                </span>
-                            </div>
-                            {isRecording ? (
-                                <p className="mt-2 text-sm text-slate-200">
-                                    {normalizeText(currentQuestion?.topic || '').includes('behavioral')
-                                        ? 'Use STAR: set the context, your role, your action, and the result.'
-                                        : 'Lead with your answer first, then explain assumptions, trade-offs, and edge cases.'}
-                                </p>
-                            ) : null}
-                            {liveCoachingCues.length > 0 ? (
-                                <div className="mt-3 space-y-2">
-                                    {liveCoachingCues.map((cue) => (
-                                        <div key={cue} className="rounded-lg border border-white/10 bg-slate-950/35 px-3 py-2 text-sm text-slate-100">
-                                            {cue}
-                                        </div>
-                                    ))}
+                        {(cameraStatus === 'requesting' || cameraStatus === 'blocked' || cameraStatus === 'unsupported') && (
+                            <section className="rounded-lg border border-sky-400/25 bg-sky-500/10 p-4">
+                                <div className="flex items-start gap-3">
+                                    <Camera className="mt-0.5 shrink-0 text-sky-200" size={18} />
+                                    <div>
+                                        <p className="text-sm font-medium text-sky-100">
+                                            {cameraStatus === 'requesting'
+                                                ? 'Waiting for camera permission'
+                                                : cameraStatus === 'blocked'
+                                                    ? 'Camera permission needs attention'
+                                                    : 'Camera is not available'}
+                                        </p>
+                                        {cameraStatus !== 'requesting' && (
+                                            <button
+                                                onClick={requestCameraAccess}
+                                                className="mt-3 rounded-md border border-sky-300/40 bg-sky-400/10 px-3 py-2 text-xs font-medium text-sky-100 transition hover:bg-sky-400/20"
+                                            >
+                                                Request permission
+                                            </button>
+                                        )}
+                                    </div>
                                 </div>
-                            ) : null}
-                        </div>
-                    )}
+                            </section>
+                        )}
 
-                    {audioMetrics && (
-                        <div className="mb-4 grid grid-cols-2 gap-2 text-sm">
-                            <div className="rounded-lg border border-white/10 bg-slate-950/60 p-3">
-                                <p className="text-xs text-slate-400">Emotion</p>
-                                <p className="capitalize">{audioMetrics.emotion}</p>
-                            </div>
-                            <div className="rounded-lg border border-white/10 bg-slate-950/60 p-3">
-                                <p className="text-xs text-slate-400">Confidence</p>
-                                <p>{audioMetrics.confidence_score}/10</p>
-                            </div>
-                            <div className="rounded-lg border border-white/10 bg-slate-950/60 p-3">
-                                <p className="text-xs text-slate-400">WPM</p>
-                                <p>{audioMetrics.wpm}</p>
-                            </div>
-                            <div className="rounded-lg border border-white/10 bg-slate-950/60 p-3">
-                                <p className="text-xs text-slate-400">Gaps</p>
-                                <p>{audioMetrics.gaps.length}</p>
-                            </div>
-                        </div>
-                    )}
+                        {sessionNotice && (
+                            <section className="rounded-lg border border-cyan-400/25 bg-cyan-500/10 p-4 animate-panel-in">
+                                <p className="text-sm leading-6 text-cyan-50">{sessionNotice}</p>
+                            </section>
+                        )}
 
-                    <div className="mt-auto rounded-xl border border-white/10 bg-slate-950/70 p-3">
-                        <p className="mb-2 text-xs uppercase tracking-wider text-slate-400">Fallback Text Reply</p>
+                        {pressureLevel !== 'off' && (
+                            <section className="rounded-lg border border-rose-400/25 bg-rose-500/10 p-4 animate-panel-in">
+                                <div className="flex items-center justify-between gap-3">
+                                    <p className="text-sm font-semibold text-rose-100">{getPressureConfig(pressureLevel).label}</p>
+                                    <span className="text-xs text-rose-100">{Math.round(getPressureConfig(pressureLevel).maxRecordingMs / 1000)}s</span>
+                                </div>
+                                <p className="mt-2 text-sm leading-6 text-zinc-200">{getPressureConfig(pressureLevel).banner}</p>
+                            </section>
+                        )}
+
+                        {error && (
+                            <section className="rounded-lg border border-rose-400/30 bg-rose-500/10 p-4 animate-panel-in">
+                                <div className="flex items-start justify-between gap-3">
+                                    <p className="text-sm leading-6 text-rose-50">{error}</p>
+                                    <button
+                                        onClick={() => setError(null)}
+                                        aria-label="Dismiss error"
+                                        title="Dismiss"
+                                        className="rounded-md border border-rose-300/30 p-1 text-rose-100 transition hover:bg-rose-500/20"
+                                    >
+                                        <X size={14} />
+                                    </button>
+                                </div>
+                            </section>
+                        )}
+
+                        {feedback && (
+                            <section className="rounded-lg border border-emerald-400/25 bg-emerald-500/10 p-4 animate-panel-in">
+                                <div className="flex items-center justify-between gap-3">
+                                    <p className="text-sm font-semibold text-emerald-100">Evaluation</p>
+                                    <p className="text-2xl font-semibold text-white">{feedback.final_score}</p>
+                                </div>
+                                <p className="mt-2 text-sm leading-6 text-zinc-100">{feedback.feedback_text}</p>
+                            </section>
+                        )}
+
+                        {liveCoachingEnabled && (isRecording || liveCoachingCues.length > 0) && (
+                            <section className="rounded-lg border border-amber-400/25 bg-amber-500/10 p-4 animate-panel-in">
+                                <div className="flex items-center justify-between gap-3">
+                                    <p className="text-sm font-semibold text-amber-100">Live Coach</p>
+                                    <Sparkles size={16} className="text-amber-200" />
+                                </div>
+                                {isRecording ? (
+                                    <p className="mt-2 text-sm leading-6 text-zinc-100">
+                                        {normalizeText(currentQuestion?.topic || '').includes('behavioral')
+                                            ? 'Use STAR: context, role, action, result.'
+                                            : 'Answer first, then cover assumptions, trade-offs, and edge cases.'}
+                                    </p>
+                                ) : null}
+                                {liveCoachingCues.length > 0 ? (
+                                    <div className="mt-3 space-y-2">
+                                        {liveCoachingCues.map((cue) => (
+                                            <p key={cue} className="rounded-md bg-black/25 px-3 py-2 text-sm leading-5 text-zinc-100">
+                                                {cue}
+                                            </p>
+                                        ))}
+                                    </div>
+                                ) : null}
+                            </section>
+                        )}
+
+                        {audioMetrics && (
+                            <section className="grid grid-cols-2 gap-2 text-sm">
+                                <div className="rounded-lg border border-white/10 bg-[#282828] p-3">
+                                    <p className="text-xs text-zinc-500">Emotion</p>
+                                    <p className="mt-1 capitalize text-zinc-100">{audioMetrics.emotion}</p>
+                                </div>
+                                <div className="rounded-lg border border-white/10 bg-[#282828] p-3">
+                                    <p className="text-xs text-zinc-500">Confidence</p>
+                                    <p className="mt-1 text-zinc-100">{audioMetrics.confidence_score}/10</p>
+                                </div>
+                                <div className="rounded-lg border border-white/10 bg-[#282828] p-3">
+                                    <p className="text-xs text-zinc-500">WPM</p>
+                                    <p className="mt-1 text-zinc-100">{audioMetrics.wpm}</p>
+                                </div>
+                                <div className="rounded-lg border border-white/10 bg-[#282828] p-3">
+                                    <p className="text-xs text-zinc-500">Gaps</p>
+                                    <p className="mt-1 text-zinc-100">{audioMetrics.gaps.length}</p>
+                                </div>
+                            </section>
+                        )}
+                    </div>
+
+                    <div className="border-t border-white/10 p-4">
                         <div className="relative">
                             <textarea
-                                className="w-full resize-none rounded-xl border border-white/10 bg-slate-900/60 p-3 pr-14 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-cyan-500/50"
-                                rows={4}
-                                placeholder="If microphone is blocked, type your answer here..."
+                                className="min-h-[96px] w-full resize-none rounded-lg border border-white/10 bg-[#151515] p-3 pr-14 text-sm leading-5 text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-sky-400/60"
+                                placeholder="Type an answer..."
                                 value={textAnswer}
                                 onChange={(e) => setTextAnswer(e.target.value)}
                             />
                             <button
                                 onClick={handleTextSubmit}
                                 disabled={!textAnswer.trim() || loading}
-                                className="absolute bottom-2 right-2 rounded-lg bg-cyan-600 p-2 transition hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-50"
+                                aria-label="Send answer"
+                                title="Send"
+                                className="absolute bottom-3 right-3 flex h-9 w-9 items-center justify-center rounded-md bg-[#2d8cff] text-white transition hover:bg-[#1f7ae0] disabled:cursor-not-allowed disabled:opacity-45"
                             >
-                                <Send size={18} />
+                                <Send size={17} />
                             </button>
                         </div>
                     </div>
                 </aside>
             </main>
-
         </div>
     );
 }

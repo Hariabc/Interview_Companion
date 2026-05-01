@@ -24,6 +24,7 @@ venv/
 env/
 .env/
 ml_service/research/data/
+ml_service/temp_audio/
 
 # OS Files
 .DS_Store

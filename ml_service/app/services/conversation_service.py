@@ -23,11 +23,11 @@ def _build_fallback_questions(
     if interview_mode == "salary_negotiation":
         templates = [
             {
-                "question_text": "State your compensation ask for this role, and justify it with scope, outcomes, and market framing.",
+                "question_text": "What compensation range would you ask for, and what is the main reason behind that number?",
                 "topic": "Salary Negotiation",
-                "difficulty_level": safe_difficulty,
-                "ideal_answer_keywords": ["market range", "impact", "scope", "negotiation", "trade-offs"],
-                "ideal_answer_text": "Anchor with evidence, quantify impact, and propose flexible components like base, bonus, and review cycle."
+                "difficulty_level": min(safe_difficulty, 2),
+                "ideal_answer_keywords": ["range", "market", "impact", "role", "flexibility"],
+                "ideal_answer_text": "Give a clear range, connect it to role scope and market data, and stay open to the full offer package."
             },
             {
                 "question_text": "If the recruiter says budget is capped, how would you respond while preserving the relationship?",
@@ -40,42 +40,76 @@ def _build_fallback_questions(
     elif interview_mode in {"hr_round", "behavioral_storytelling", "managerial_leadership"}:
         templates = [
             {
-                "question_text": "Tell me about a difficult disagreement at work and how you resolved it.",
+                "question_text": "Tell me about one project you are proud of. What was your role and what changed because of your work?",
                 "topic": "Behavioral",
-                "difficulty_level": safe_difficulty,
-                "ideal_answer_keywords": ["context", "stakeholders", "action", "outcome", "learning"],
-                "ideal_answer_text": "Use STAR format and show communication, judgment, and measurable outcome."
+                "difficulty_level": min(safe_difficulty, 2),
+                "ideal_answer_keywords": ["project", "role", "action", "impact", "learning"],
+                "ideal_answer_text": "Use a simple STAR structure: context, your action, result, and learning."
             },
             {
-                "question_text": "Describe a time you took ownership beyond your formal role.",
+                "question_text": "Describe a time you helped someone or unblocked a team task.",
                 "topic": "Leadership",
-                "difficulty_level": safe_difficulty,
+                "difficulty_level": min(safe_difficulty, 2),
                 "ideal_answer_keywords": ["ownership", "initiative", "alignment", "impact", "reflection"],
                 "ideal_answer_text": "Show initiative, cross-team alignment, concrete impact, and what you improved afterward."
+            },
+        ]
+    elif interview_mode == "system_design":
+        templates = [
+            {
+                "question_text": "Pick one app feature you know well. How would you design the basic backend for it?",
+                "topic": "System Design",
+                "difficulty_level": min(safe_difficulty, 2),
+                "ideal_answer_keywords": ["requirements", "api", "database", "scale", "trade-off"],
+                "ideal_answer_text": "Clarify requirements, name core APIs and storage, then mention one scaling or reliability trade-off."
+            },
+            {
+                "question_text": "How would you store and show notifications for users in a simple web app?",
+                "topic": "System Design",
+                "difficulty_level": min(safe_difficulty, 2),
+                "ideal_answer_keywords": ["user", "database", "status", "api", "delivery"],
+                "ideal_answer_text": "Discuss notification records, read/unread status, basic APIs, and delivery options."
+            },
+        ]
+    elif interview_mode == "dsa_round":
+        templates = [
+            {
+                "question_text": "Given a list of numbers, how would you find the largest number and what is the time complexity?",
+                "topic": "Problem Solving",
+                "difficulty_level": min(safe_difficulty, 2),
+                "ideal_answer_keywords": ["loop", "maximum", "O(n)", "edge cases"],
+                "ideal_answer_text": "Scan once, track the current maximum, handle empty input, and explain O(n) time and O(1) space."
+            },
+            {
+                "question_text": "How would you check whether a string is a palindrome?",
+                "topic": "Strings",
+                "difficulty_level": min(safe_difficulty, 2),
+                "ideal_answer_keywords": ["two pointers", "compare", "O(n)", "edge cases"],
+                "ideal_answer_text": "Use two pointers from both ends, compare characters, and discuss normalization if needed."
             },
         ]
     else:
         templates = [
             {
-                "question_text": f"You mentioned {safe_topic}. Walk me through a project where you applied it, key design choices, and one trade-off you would revisit.",
+                "question_text": f"Let's start simple with {safe_topic}. What is one small feature or problem you handled, and how did you approach it?",
                 "topic": safe_topic,
-                "difficulty_level": safe_difficulty,
-                "ideal_answer_keywords": ["architecture", "trade-off", "scalability", "testing", "ownership"],
-                "ideal_answer_text": "Describe context, decision rationale, measurable impact, and what you would improve with hindsight."
+                "difficulty_level": min(safe_difficulty, 2),
+                "ideal_answer_keywords": ["problem", "approach", "decision", "result", "learning"],
+                "ideal_answer_text": "Describe the problem, your approach, one decision you made, and the result."
             },
             {
-                "question_text": "Let us do a DSA check: how would you solve two-sum efficiently, and what are the time and space complexity trade-offs?",
-                "topic": "Data Structures and Algorithms",
-                "difficulty_level": max(2, safe_difficulty),
-                "ideal_answer_keywords": ["hash map", "O(n)", "space complexity", "edge cases"],
-                "ideal_answer_text": "Use a hash map for complements for O(n) time and O(n) space; contrast with brute-force O(n^2) and discuss duplicates."
+                "question_text": "Tell me about a bug or issue you fixed recently. How did you find the cause?",
+                "topic": "Debugging",
+                "difficulty_level": min(safe_difficulty, 2),
+                "ideal_answer_keywords": ["reproduce", "logs", "hypothesis", "fix", "verify"],
+                "ideal_answer_text": "Explain reproduction, investigation, fix, verification, and prevention."
             },
             {
-                "question_text": f"At your {experience_level} level, how do you debug a production issue in {safe_topic} when logs are incomplete?",
+                "question_text": f"What is one thing you would improve in a past {safe_topic} project if you rebuilt it today?",
                 "topic": safe_topic,
-                "difficulty_level": safe_difficulty,
-                "ideal_answer_keywords": ["hypothesis", "reproduction", "instrumentation", "rollback", "monitoring"],
-                "ideal_answer_text": "Explain a structured debugging workflow: triage, isolate, instrument, mitigate, verify, and prevent recurrence."
+                "difficulty_level": min(safe_difficulty, 2),
+                "ideal_answer_keywords": ["improvement", "reason", "impact", "trade-off"],
+                "ideal_answer_text": "Name a concrete improvement, why it matters, and the trade-off."
             }
         ]
 
@@ -222,7 +256,7 @@ def generate_contextual_questions(
     mode_directive = str(user_intro_analysis.get("mode_directive", "") or "").strip()
     adaptive_context = user_intro_analysis.get("adaptive_context", {}) or {}
     non_technical_modes = {"hr_round", "salary_negotiation", "behavioral_storytelling", "managerial_leadership"}
-    must_include_dsa = interview_mode not in non_technical_modes
+    must_include_dsa = interview_mode == "dsa_round"
 
     try:
         # Combine topics from user intro and selected topics
@@ -255,7 +289,7 @@ def generate_contextual_questions(
             trimmed_history = conversation_history[-8:]
             history_context = f"\n\nRecent Conversation History: {json.dumps(trimmed_history)}"
         
-        dsa_guidance = "Ensure at least one prompt in this batch is DSA-focused and asks for time/space complexity." if must_include_dsa else "Do not force DSA prompts in this mode unless the user explicitly asks for coding."
+        dsa_guidance = "This is DSA mode: ask beginner-friendly algorithm questions first and include time/space complexity." if must_include_dsa else "Do not force DSA prompts in this mode unless the selected interview mode is DSA."
 
         completion = client.chat.completions.create(
             messages=[
@@ -267,7 +301,11 @@ def generate_contextual_questions(
                     - Start with an explicit acknowledgment of what the candidate just said (paraphrase, not copy)
                     - Ask a focused follow-up
                     - Avoid robotic tone and avoid asking disconnected questions
-                    - Keep each prompt to 1-3 sentences, concise and spoken-friendly
+                    - Keep each prompt to 1-2 short sentences, concise and spoken-friendly
+                    - Prefer simple, answerable questions first; avoid senior-level architecture, obscure algorithms, or heavy trade-off chains unless difficulty is 4-5
+                    - Do not ask the same generic opening question about MERN stack, full-stack work, or "walk me through a project where you applied it"
+                    - Do not start every new session with "You mentioned..." or "You have worked with..."; vary the angle using the diversity nonce
+                    - For the first generated batch after introduction, make the first question a simple mode-specific warm-up
                     - If candidate asks for help/support, adapt tone to supportive coaching before technical probing
                     - If candidate asks to skip, acknowledge and move on gracefully
                     - Respect the adaptive follow-up strategy when provided:
@@ -279,6 +317,7 @@ def generate_contextual_questions(
                     - Do not inject generic motivational lines unless the candidate explicitly asks for help/support
                     - Keep prompts consistent with selected interview mode and mode directive
                     - Never repeat or trivially rephrase a question already asked in this session
+                    - Balanced mode should mix practical technical, debugging, and behavioral questions; DSA mode should be the only mode that requires algorithm puzzles
                     
                     Return ONLY valid JSON in this format:
                     {
@@ -318,6 +357,8 @@ def generate_contextual_questions(
                     {history_context}
                     
                     Generate prompts that build naturally on what the candidate said.
+                    Make the first prompt easier than the rest unless Difficulty Hint is 4 or 5.
+                    Use the Interview Mode as the main guide for question type.
                     """
                 }
             ],

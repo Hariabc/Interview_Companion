@@ -18,7 +18,6 @@ import {
 const router = express.Router();
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
 const MANDATORY_TECHNICAL_TOPICS = ['Data Structures and Algorithms'];
-const NON_TECHNICAL_MODES = new Set(['hr_round', 'salary_negotiation', 'behavioral_storytelling', 'managerial_leadership']);
 
 function withMandatoryTechnicalTopics(topics: any, includeMandatory: boolean = true): string[] {
     const input = Array.isArray(topics) ? topics : [];
@@ -41,7 +40,7 @@ function withMandatoryTechnicalTopics(topics: any, includeMandatory: boolean = t
 }
 
 function modeRequiresTechnicalTopics(mode: any): boolean {
-    return !NON_TECHNICAL_MODES.has(String(mode || '').trim().toLowerCase());
+    return String(mode || '').trim().toLowerCase() === 'dsa_round';
 }
 
 function detectConversationSignals(text: string) {
@@ -76,14 +75,80 @@ function extractCandidateName(introText: string) {
     return null;
 }
 
-function buildFallbackQuestion(topicHint?: string | null, difficultyHint: number = 3) {
-    const topic = String(topicHint || 'Data Structures and Algorithms').trim() || 'Data Structures and Algorithms';
+function difficultyPreferenceToHint(preference: any): number {
+    const normalized = String(preference || 'medium').trim().toLowerCase();
+    if (normalized === 'easy') return 1;
+    if (normalized === 'hard') return 4;
+    return 2;
+}
+
+function buildFallbackQuestion(topicHint?: string | null, difficultyHint: number = 2, modeHint: any = 'balanced') {
+    const mode = normalizeMode(modeHint);
+    const topic = String(topicHint || (mode === 'dsa_round' ? 'Problem Solving' : 'Interview Basics')).trim() || 'Interview Basics';
     const difficulty = Math.max(1, Math.min(5, Number(difficultyHint) || 3));
+
+    if (mode === 'hr_round') {
+        return {
+            question_text: 'Tell me about a time you had to explain a problem clearly to someone. What did you do?',
+            topic: 'Communication',
+            difficulty_level: difficulty,
+            ideal_answer_keywords: ['context', 'clarity', 'listener', 'action', 'outcome']
+        };
+    }
+    if (mode === 'salary_negotiation') {
+        return {
+            question_text: 'What compensation range would you ask for, and what is the main reason behind that number?',
+            topic: 'Salary Negotiation',
+            difficulty_level: difficulty,
+            ideal_answer_keywords: ['range', 'market', 'impact', 'flexibility', 'role']
+        };
+    }
+    if (mode === 'system_design') {
+        return {
+            question_text: 'Pick one app feature you know well. How would you design the basic backend for it?',
+            topic: 'System Design',
+            difficulty_level: difficulty,
+            ideal_answer_keywords: ['requirements', 'api', 'database', 'scale', 'trade-off']
+        };
+    }
+    if (mode === 'behavioral_storytelling') {
+        return {
+            question_text: 'Tell me about one project you are proud of. What was your role and what changed because of your work?',
+            topic: 'Behavioral',
+            difficulty_level: difficulty,
+            ideal_answer_keywords: ['project', 'role', 'action', 'impact', 'learning']
+        };
+    }
+    if (mode === 'managerial_leadership') {
+        return {
+            question_text: 'Describe a time you helped a teammate or group move forward when things were unclear.',
+            topic: 'Leadership',
+            difficulty_level: difficulty,
+            ideal_answer_keywords: ['ambiguity', 'support', 'alignment', 'decision', 'outcome']
+        };
+    }
+    if (mode === 'rapid_fire') {
+        return {
+            question_text: `In one minute, explain one practical use of ${topic}.`,
+            topic,
+            difficulty_level: difficulty,
+            ideal_answer_keywords: ['use case', 'simple explanation', 'example', 'benefit']
+        };
+    }
+    if (mode === 'dsa_round') {
+        return {
+            question_text: 'Given a list of numbers, how would you find the largest number and explain the time complexity?',
+            topic: 'Problem Solving',
+            difficulty_level: difficulty,
+            ideal_answer_keywords: ['loop', 'maximum', 'O(n)', 'edge cases']
+        };
+    }
+
     return {
-        question_text: `Let's start with ${topic}. Explain one problem you solved recently, your approach, and one improvement you would make now.`,
+        question_text: `Let's start simple with ${topic}. What is one small feature or problem you handled, and how did you approach it?`,
         topic,
         difficulty_level: difficulty,
-        ideal_answer_keywords: ['problem', 'approach', 'trade-off', 'time complexity', 'testing']
+        ideal_answer_keywords: ['problem', 'approach', 'decision', 'result', 'learning']
     };
 }
 
@@ -391,6 +456,7 @@ router.post('/user-response', authenticate, upload.single('audio'), async (req: 
         const topicSource = requestedTopics.length > 0 ? requestedTopics : configuredTopics;
         const selectedTopicsWithTechnical = withMandatoryTechnicalTopics(topicSource, modeRequiresTechnicalTopics(configuredMode));
         const configuredCount = Math.max(2, Math.min(8, Number(existingContext?.target_questions) || 3));
+        const initialDifficulty = difficultyPreferenceToHint(existingContext?.difficulty_preference);
         const { data: existingSessionQuestions } = await supabase
             .from('questions')
             .select('question_text')
@@ -413,15 +479,16 @@ router.post('/user-response', authenticate, upload.single('audio'), async (req: 
             resume_text: resumeText,
             selected_topics: selectedTopicsWithTechnical,
             count: configuredCount,
+            difficulty_hint: initialDifficulty,
             asked_questions: askedQuestions,
-            diversity_nonce: `${sessionId}-${Date.now()}`
+            diversity_nonce: `${configuredMode}-${sessionId}-${Date.now()}-${Math.random().toString(36).slice(2)}`
         });
 
         const responseQuestions = Array.isArray(questionsResponse.data?.questions) ? questionsResponse.data.questions : [];
         const validQuestions = responseQuestions.filter((q: any) => String(q?.question_text || '').trim());
         const questions = validQuestions.length
             ? validQuestions
-            : [buildFallbackQuestion(selectedTopicsWithTechnical?.[0] || userAnalysis?.key_topics?.[0], 3)];
+            : [buildFallbackQuestion(selectedTopicsWithTechnical?.[0] || userAnalysis?.key_topics?.[0], initialDifficulty, configuredMode)];
 
         // Save questions to database
         const sanitizedQuestions = questions.map((q: any) => ({
@@ -647,7 +714,7 @@ router.post('/next-question', authenticate, async (req: AuthRequest, res) => {
             previous_answer: previousAnswer,
             audio_metrics: audioMetrics,
             asked_questions: askedQuestions,
-            diversity_nonce: `${sessionId}-${Date.now()}`
+            diversity_nonce: `${configuredMode}-${sessionId}-${Date.now()}-${Math.random().toString(36).slice(2)}`
         });
 
         const generatedQuestions = Array.isArray(mlResponse.data?.questions) ? mlResponse.data.questions : [];
@@ -655,7 +722,8 @@ router.post('/next-question', authenticate, async (req: AuthRequest, res) => {
             ? generatedQuestions[0]
             : buildFallbackQuestion(
                 String(currentTopic || contextTopicsWithTechnical?.[0] || 'Data Structures and Algorithms'),
-                difficulty
+                difficulty,
+                configuredMode
             );
 
         // Save question to database

@@ -7,7 +7,6 @@ const router = express.Router();
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
 const SKIP_ANSWER_MARKER = '[SKIPPED_BY_USER]';
 const MANDATORY_TECHNICAL_TOPICS = ['Data Structures and Algorithms'];
-const NON_TECHNICAL_MODES = new Set(['hr_round', 'salary_negotiation', 'behavioral_storytelling', 'managerial_leadership']);
 const SCORE_ANSWER_TIMEOUT_MS = 9000;
 const NEXT_QUESTION_TIMEOUT_MS = 7000;
 const SUPPORTED_MODES = new Set([
@@ -179,14 +178,49 @@ function detectConversationSignals(text: string) {
     };
 }
 
-function buildFallbackQuestion(topicHint?: string | null, difficultyHint: number = 3) {
-    const topic = String(topicHint || 'Data Structures and Algorithms').trim() || 'Data Structures and Algorithms';
-    const difficulty = Math.max(1, Math.min(5, Number(difficultyHint) || 3));
+function buildFallbackQuestion(topicHint?: string | null, difficultyHint: number = 2, modeHint: any = 'balanced') {
+    const mode = normalizeInterviewMode(modeHint);
+    const topic = String(topicHint || (mode === 'dsa_round' ? 'Problem Solving' : 'Interview Basics')).trim() || 'Interview Basics';
+    const difficulty = Math.max(1, Math.min(5, Number(difficultyHint) || 2));
+
+    if (mode === 'dsa_round') {
+        return {
+            question_text: 'Given a list of numbers, how would you find the largest number and what is the time complexity?',
+            topic: 'Problem Solving',
+            difficulty_level: difficulty,
+            ideal_answer_keywords: ['loop', 'maximum', 'O(n)', 'edge cases']
+        };
+    }
+    if (mode === 'system_design') {
+        return {
+            question_text: 'Pick one app feature you know well. How would you design the basic backend for it?',
+            topic: 'System Design',
+            difficulty_level: difficulty,
+            ideal_answer_keywords: ['requirements', 'api', 'database', 'scale', 'trade-off']
+        };
+    }
+    if (mode === 'hr_round' || mode === 'behavioral_storytelling' || mode === 'managerial_leadership') {
+        return {
+            question_text: 'Tell me about one project you are proud of. What was your role and what changed because of your work?',
+            topic: 'Behavioral',
+            difficulty_level: difficulty,
+            ideal_answer_keywords: ['project', 'role', 'action', 'impact', 'learning']
+        };
+    }
+    if (mode === 'salary_negotiation') {
+        return {
+            question_text: 'What compensation range would you ask for, and what is the main reason behind that number?',
+            topic: 'Salary Negotiation',
+            difficulty_level: difficulty,
+            ideal_answer_keywords: ['range', 'market', 'impact', 'role', 'flexibility']
+        };
+    }
+
     return {
-        question_text: `Let's continue with ${topic}. Explain how you would approach a real-world problem in this area and discuss time-space trade-offs.`,
+        question_text: `Let's continue with ${topic}. What is one small problem you handled, and how did you approach it?`,
         topic,
         difficulty_level: difficulty,
-        ideal_answer_keywords: ['approach', 'trade-off', 'complexity', 'edge cases', 'testing']
+        ideal_answer_keywords: ['problem', 'approach', 'decision', 'result', 'learning']
     };
 }
 
@@ -576,7 +610,7 @@ router.post('/start', authenticate, async (req: AuthRequest, res) => {
 
     try {
         const interviewMode = normalizeInterviewMode(req.body.interviewMode);
-        const includeMandatoryTopics = !NON_TECHNICAL_MODES.has(interviewMode);
+        const includeMandatoryTopics = interviewMode === 'dsa_round';
         const mergedTopics = withMandatoryTechnicalTopics(
             [...defaultTopicsByMode(interviewMode), ...(Array.isArray(topics) ? topics : [])],
             includeMandatoryTopics
@@ -863,7 +897,9 @@ router.post('/answer', authenticate, async (req: AuthRequest, res) => {
                         ? session.conversation_context.areas_of_interest
                         : ['General']);
 
-                const contextTopicsWithTechnical = withMandatoryTechnicalTopics(contextTopics);
+                const configuredMode = normalizeInterviewMode(session?.conversation_context?.interview_mode);
+                const includeMandatoryTopics = configuredMode === 'dsa_round';
+                const contextTopicsWithTechnical = withMandatoryTechnicalTopics(contextTopics, includeMandatoryTopics);
                 const { data: askedQuestionRows } = await supabase
                     .from('questions')
                     .select('question_text')
@@ -878,17 +914,19 @@ router.post('/answer', authenticate, async (req: AuthRequest, res) => {
                         user_intro_analysis: {
                             ...(session?.conversation_context || {}),
                             user_signals: userSignals,
-                            adaptive_context: adaptiveDecision
+                            adaptive_context: adaptiveDecision,
+                            interview_mode: configuredMode,
+                            mode_prompt: modePrompt(configuredMode)
                         },
                         resume_text: resumeText,
-                        selected_topics: withMandatoryTechnicalTopics([question?.topic || contextTopicsWithTechnical[0] || 'General']),
+                        selected_topics: withMandatoryTechnicalTopics([question?.topic || contextTopicsWithTechnical[0] || 'General'], includeMandatoryTopics),
                         count: 1,
                         difficulty_hint: difficultyHint,
                         previous_answer: answerForContext,
                         audio_metrics: req.body.voiceMetrics || null,
                         conversation_history: conversationHistory,
                         asked_questions: askedQuestions,
-                        diversity_nonce: `${sessionId}-${Date.now()}`
+                        diversity_nonce: `${configuredMode}-${sessionId}-${Date.now()}-${Math.random().toString(36).slice(2)}`
                     }),
                     NEXT_QUESTION_TIMEOUT_MS,
                     'Next question generation timed out'
@@ -897,7 +935,7 @@ router.post('/answer', authenticate, async (req: AuthRequest, res) => {
                 const generatedQuestions = Array.isArray(contextualResponse.data?.questions) ? contextualResponse.data.questions : [];
                 const q = generatedQuestions[0] && String(generatedQuestions[0]?.question_text || '').trim()
                     ? generatedQuestions[0]
-                    : buildFallbackQuestion(question?.topic || contextTopicsWithTechnical[0] || 'Data Structures and Algorithms', difficultyHint);
+                    : buildFallbackQuestion(question?.topic || contextTopicsWithTechnical[0] || 'General', difficultyHint, configuredMode);
 
                 if (q && String(q.question_text || '').trim()) {
                     const { data: insertedQ, error: insError } = await supabase
