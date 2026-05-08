@@ -11,6 +11,7 @@ import {
     MicOff,
     Send,
     Sparkles,
+    Square,
     Video,
     Volume2,
     X
@@ -53,6 +54,7 @@ interface AdaptiveDecision {
 type CoachStyleMode = 'supportive' | 'balanced' | 'strict';
 type PressureLevel = 'off' | 'moderate' | 'intense';
 type CameraStatus = 'requesting' | 'ready' | 'blocked' | 'unsupported';
+type InterviewerGender = 'female' | 'male';
 
 const SILENCE_THRESHOLD = 0.02;
 const SILENCE_HOLD_MS = 5000;
@@ -60,7 +62,7 @@ const NO_SPEECH_TIMEOUT_MS = 5000;
 const MAX_RECORDING_MS = 90000;
 const MAX_NO_RESPONSE_ATTEMPTS = 2;
 const CODING_ROUND_TRIGGER_AFTER_ANSWERS = 2;
-const CODING_ENABLED_MODES = new Set(['balanced', 'dsa_round', 'system_design', 'rapid_fire']);
+const CODING_ENABLED_MODES = new Set(['dsa_round', 'system_design', 'rapid_fire']);
 const SKIP_ANSWER_MARKER = '[SKIPPED_BY_USER]';
 
 const ENCOURAGEMENT_MESSAGES = [
@@ -68,6 +70,7 @@ const ENCOURAGEMENT_MESSAGES = [
     "It's absolutely okay. If you want, just say skip this question and we will move ahead."
 ];
 const FEMALE_VOICE_HINTS = ['jenny', 'aria', 'zira', 'sara', 'emma', 'female', 'woman'];
+const MALE_VOICE_HINTS = ['guy', 'davis', 'mark', 'david', 'male', 'man'];
 
 const normalizeText = (value: string) => value.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
@@ -96,6 +99,27 @@ const formatAdaptiveNotice = (decision: AdaptiveDecision) => {
     };
 
     return `${labels[decision.strategy]} ${decision.rationale}`;
+};
+
+const getInterviewerDescription = (mode: string) => {
+    switch (String(mode || '').trim().toLowerCase()) {
+        case 'salary_negotiation':
+            return 'Negotiation coach focused on compensation strategy and confident positioning.';
+        case 'hr_round':
+            return 'HR interviewer focused on communication, teamwork, and role fit.';
+        case 'dsa_round':
+            return 'Technical interviewer focused on algorithms, edge cases, and complexity.';
+        case 'system_design':
+            return 'System design interviewer focused on architecture and trade-offs.';
+        case 'behavioral_storytelling':
+            return 'Behavioral interviewer focused on STAR stories and measurable impact.';
+        case 'managerial_leadership':
+            return 'Leadership interviewer focused on judgment, people management, and alignment.';
+        case 'rapid_fire':
+            return 'Rapid-fire interviewer focused on concise, structured answers.';
+        default:
+            return 'AI interviewer focused on clear, adaptive technical and behavioral follow-ups.';
+    }
 };
 
 const getPressureConfig = (pressureLevel: PressureLevel) => {
@@ -206,8 +230,12 @@ export default function InterviewSession() {
     const [adaptiveDecision, setAdaptiveDecision] = useState<AdaptiveDecision | null>(null);
     const [spokenAnswersCount, setSpokenAnswersCount] = useState(0);
     const [codingRoundCompleted, setCodingRoundCompleted] = useState(false);
-    const [codingRoundEnabled, setCodingRoundEnabled] = useState(true);
+    const [codingRoundEnabled, setCodingRoundEnabled] = useState(false);
     const [sessionNotice, setSessionNotice] = useState<string | null>(null);
+    const [activePromptText, setActivePromptText] = useState('');
+    const [interviewerName, setInterviewerName] = useState('Meera');
+    const [interviewerGender, setInterviewerGender] = useState<InterviewerGender>('female');
+    const [interviewerDescription, setInterviewerDescription] = useState('AI interviewer focused on clear, adaptive follow-up questions.');
     const [clockText, setClockText] = useState('--:--:--');
     const [liveCoachingEnabled, setLiveCoachingEnabled] = useState(false);
     const [coachStyleMode, setCoachStyleMode] = useState<CoachStyleMode>('balanced');
@@ -244,15 +272,37 @@ export default function InterviewSession() {
     const lastMicUiUpdateRef = useRef(0);
     const codingTransitionActiveRef = useRef(false);
     const isPlayingAudioRef = useRef(false);
+    const aiSpeechSequenceRef = useRef(0);
+    const interviewerGenderRef = useRef<InterviewerGender>('female');
     const setAudioPlaybackState = (playing: boolean) => {
         isPlayingAudioRef.current = playing;
         setIsPlayingAudio(playing);
+    };
+
+    const showQuestionNow = (question: Question, index: number) => {
+        setQuestions((prev) => {
+            const updated = [...prev];
+            updated[index] = question;
+            return updated.slice(0, index + 1);
+        });
+        setCurrentQuestionIndex(index);
+        activeQuestionIdRef.current = question.id;
+        setPhase('questioning');
+        setActivePromptText(question.question_text || '');
     };
 
     const applySessionRuntimeConfig = (sessionPayload: any) => {
         const context = sessionPayload?.conversation_context || {};
         const mode = String(context?.interview_mode || 'balanced');
         setCodingRoundEnabled(CODING_ENABLED_MODES.has(mode));
+        if (context?.interviewer_name) {
+            setInterviewerName(String(context.interviewer_name));
+        }
+        if (context?.interviewer_gender === 'male' || context?.interviewer_gender === 'female') {
+            interviewerGenderRef.current = context.interviewer_gender;
+            setInterviewerGender(context.interviewer_gender);
+        }
+        setInterviewerDescription(getInterviewerDescription(mode));
         setLiveCoachingEnabled(Boolean(context?.live_coaching_enabled));
         const style = String(context?.coach_style || 'balanced');
         setCoachStyleMode(style === 'supportive' || style === 'strict' ? style : 'balanced');
@@ -384,6 +434,8 @@ export default function InterviewSession() {
 
         return () => {
             window.removeEventListener('popstate', stopOnBackNavigation);
+            isEndingRef.current = true;
+            aiSpeechSequenceRef.current += 1;
             pendingTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
             pendingTimeoutsRef.current = [];
             cleanupRecorderResources();
@@ -515,6 +567,7 @@ export default function InterviewSession() {
 
     const stopAllSessionMedia = () => {
         isEndingRef.current = true;
+        aiSpeechSequenceRef.current += 1;
         pendingTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
         pendingTimeoutsRef.current = [];
         stopReasonRef.current = 'manual';
@@ -549,54 +602,83 @@ export default function InterviewSession() {
         setIsRecording(false);
     };
 
-    const getPreferredFemaleVoice = () => {
+    const closeMeetingNow = () => {
+        stopAllSessionMedia();
+        router.push('/dashboard');
+    };
+
+    const beginAiSpeechSequence = () => {
+        aiSpeechSequenceRef.current += 1;
+        return aiSpeechSequenceRef.current;
+    };
+
+    const isCurrentAiSpeechSequence = (sequence: number) => (
+        !isEndingRef.current &&
+        aiSpeechSequenceRef.current === sequence
+    );
+
+    const stopCurrentAiSpeechPlayback = () => {
+        if (audioRef.current) {
+            audioRef.current.onplay = null;
+            audioRef.current.onended = null;
+            audioRef.current.onerror = null;
+            audioRef.current.pause();
+            audioRef.current.src = '';
+            audioRef.current = null;
+        }
+        if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+            window.speechSynthesis.cancel();
+        }
+        setAudioPlaybackState(false);
+    };
+
+    const getPreferredBrowserVoice = () => {
         if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
             return null;
         }
         const voices = window.speechSynthesis.getVoices();
         if (!voices?.length) return null;
+        const hints = interviewerGenderRef.current === 'male' ? MALE_VOICE_HINTS : FEMALE_VOICE_HINTS;
         return (
-            voices.find((v) => FEMALE_VOICE_HINTS.some((hint) => v.name.toLowerCase().includes(hint))) ||
-            voices.find((v) => FEMALE_VOICE_HINTS.some((hint) => v.voiceURI.toLowerCase().includes(hint))) ||
+            voices.find((v) => hints.some((hint) => v.name.toLowerCase().includes(hint))) ||
+            voices.find((v) => hints.some((hint) => v.voiceURI.toLowerCase().includes(hint))) ||
             null
         );
     };
 
-    const speakWithBrowserTTS = (text: string, onEnd?: () => void) => {
-        if (isEndingRef.current) {
+    const getInterviewerVoiceParam = () => interviewerGenderRef.current === 'male' ? 'male_professional' : 'female_friendly';
+
+    const speakWithBrowserTTS = (text: string, onEnd?: () => void, sequence = beginAiSpeechSequence()) => {
+        if (!isCurrentAiSpeechSequence(sequence)) {
             return;
         }
         if (!text?.trim()) {
             onEnd?.();
             return;
         }
+        setActivePromptText(text);
         try {
             if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
                 onEnd?.();
                 return;
             }
-            if (audioRef.current) {
-                audioRef.current.pause();
-                audioRef.current.src = '';
-                audioRef.current = null;
-            }
-            window.speechSynthesis.cancel();
+            stopCurrentAiSpeechPlayback();
             const utterance = new SpeechSynthesisUtterance(text);
             utterance.rate = 1;
             utterance.pitch = 1;
-            const femaleVoice = getPreferredFemaleVoice();
-            if (femaleVoice) {
-                utterance.voice = femaleVoice;
+            const preferredVoice = getPreferredBrowserVoice();
+            if (preferredVoice) {
+                utterance.voice = preferredVoice;
             }
             setTurn('ai');
             setAudioPlaybackState(true);
             utterance.onend = () => {
-                if (isEndingRef.current) return;
+                if (!isCurrentAiSpeechSequence(sequence)) return;
                 setAudioPlaybackState(false);
                 onEnd?.();
             };
             utterance.onerror = () => {
-                if (isEndingRef.current) return;
+                if (!isCurrentAiSpeechSequence(sequence)) return;
                 setAudioPlaybackState(false);
                 onEnd?.();
             };
@@ -609,11 +691,14 @@ export default function InterviewSession() {
     };
 
     const speakWithPreferredFemaleVoice = async (text: string, onEnd?: () => void) => {
-        if (isEndingRef.current) return;
+        const sequence = beginAiSpeechSequence();
+        if (!isCurrentAiSpeechSequence(sequence)) return;
         if (!text?.trim()) {
             onEnd?.();
             return;
         }
+        setActivePromptText(text);
+        stopCurrentAiSpeechPlayback();
         try {
             const ttsResponse = await axios.post(
                 `${ML_URL}/synthesize_speech`,
@@ -621,84 +706,93 @@ export default function InterviewSession() {
                 {
                     params: {
                         text,
-                        voice: 'female_friendly'
+                        voice: getInterviewerVoiceParam()
                     }
                 }
             );
+            if (!isCurrentAiSpeechSequence(sequence)) {
+                return;
+            }
             const audioBase64 = ttsResponse.data?.audio_base64;
             if (audioBase64) {
-                playAudioFromBase64(audioBase64, onEnd, text);
+                playAudioFromBase64(audioBase64, onEnd, text, sequence);
                 return;
             }
         } catch (err) {
+            if (!isCurrentAiSpeechSequence(sequence)) {
+                return;
+            }
             console.error('Preferred female TTS failed, falling back to browser TTS:', err);
         }
-        speakWithBrowserTTS(text, onEnd);
+        speakWithBrowserTTS(text, onEnd, sequence);
     };
 
-    const playAudioFromBase64 = (base64Audio: string, onEnd?: () => void, fallbackText?: string) => {
-        if (isEndingRef.current) {
+    const playAudioFromBase64 = (base64Audio: string, onEnd?: () => void, fallbackText?: string, sequence = beginAiSpeechSequence()) => {
+        if (!isCurrentAiSpeechSequence(sequence)) {
             return;
         }
+        if (fallbackText?.trim()) {
+            setActivePromptText(fallbackText);
+        }
         if (!base64Audio) {
-            speakWithBrowserTTS(fallbackText || '', onEnd);
+            speakWithBrowserTTS(fallbackText || '', onEnd, sequence);
             return;
         }
         try {
-            if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-                window.speechSynthesis.cancel();
-            }
-            if (audioRef.current) {
-                audioRef.current.onplay = null;
-                audioRef.current.onended = null;
-                audioRef.current.onerror = null;
-                audioRef.current.pause();
-                audioRef.current.src = '';
-            }
+            stopCurrentAiSpeechPlayback();
 
             const audio = new Audio(`data:audio/mp3;base64,${base64Audio}`);
             audioRef.current = audio;
 
             audio.onplay = () => {
-                if (isEndingRef.current) {
+                if (!isCurrentAiSpeechSequence(sequence)) {
                     audio.pause();
                     return;
+                }
+                if (fallbackText?.trim()) {
+                    setActivePromptText(fallbackText);
                 }
                 setTurn('ai');
                 setAudioPlaybackState(true);
             };
             audio.onended = () => {
-                if (isEndingRef.current) {
+                if (!isCurrentAiSpeechSequence(sequence)) {
                     return;
                 }
                 setAudioPlaybackState(false);
                 onEnd?.();
             };
             audio.onerror = () => {
-                if (isEndingRef.current) {
+                if (!isCurrentAiSpeechSequence(sequence)) {
                     return;
                 }
                 setAudioPlaybackState(false);
                 if (fallbackText) {
-                    speakWithBrowserTTS(fallbackText, onEnd);
+                    speakWithBrowserTTS(fallbackText, onEnd, sequence);
                     return;
                 }
                 onEnd?.();
             };
 
             audio.play().catch((err) => {
+                if (!isCurrentAiSpeechSequence(sequence)) {
+                    return;
+                }
                 console.error('Audio play failed:', err);
                 setAudioPlaybackState(false);
                 if (fallbackText) {
-                    speakWithBrowserTTS(fallbackText, onEnd);
+                    speakWithBrowserTTS(fallbackText, onEnd, sequence);
                 } else {
                     onEnd?.();
                 }
             });
         } catch (err) {
             console.error('Audio playback error:', err);
+            if (!isCurrentAiSpeechSequence(sequence)) {
+                return;
+            }
             if (fallbackText) {
-                speakWithBrowserTTS(fallbackText, onEnd);
+                speakWithBrowserTTS(fallbackText, onEnd, sequence);
             } else {
                 onEnd?.();
             }
@@ -744,6 +838,15 @@ export default function InterviewSession() {
         setPhase(nextPhase);
         setTurn('user');
         setFeedback(null);
+        if (nextPhase === 'user_intro') {
+            setActivePromptText('Introduce yourself, your experience, and what you are looking for.');
+        } else {
+            const activeQuestionText =
+                (nextQuestionId && questions.find((q) => q.id === nextQuestionId)?.question_text) ||
+                questions[currentQuestionIndex]?.question_text ||
+                activePromptText;
+            setActivePromptText(activeQuestionText || '');
+        }
         if (pressureLevel !== 'off') {
             setSessionNotice(getPressureConfig(pressureLevel).banner);
         }
@@ -763,6 +866,13 @@ export default function InterviewSession() {
 
             const { intro_text, audio_base64 } = response.data;
             setAiIntroText(intro_text);
+            if (response.data?.interviewer_name) {
+                setInterviewerName(String(response.data.interviewer_name));
+            }
+            if (response.data?.interviewer_gender === 'male' || response.data?.interviewer_gender === 'female') {
+                interviewerGenderRef.current = response.data.interviewer_gender;
+                setInterviewerGender(response.data.interviewer_gender);
+            }
 
             if (audio_base64) {
                 playAudioFromBase64(audio_base64, () => {
@@ -808,12 +918,28 @@ export default function InterviewSession() {
     const stopRecordingAuto = () => {
         const recorder = mediaRecorderRef.current;
         if (!recorder || recorder.state !== 'recording') {
+            setIsRecording(false);
+            cleanupRecorderResources();
             return;
         }
 
         if (!stopReasonRef.current) {
             stopReasonRef.current = 'manual';
         }
+        recorder.stop();
+        setIsRecording(false);
+    };
+
+    const handleManualSubmitRecording = () => {
+        const recorder = mediaRecorderRef.current;
+        if (!recorder || recorder.state !== 'recording') {
+            setIsRecording(false);
+            cleanupRecorderResources();
+            return;
+        }
+        stopReasonRef.current = 'manual';
+        setSessionNotice('Submitting your recorded answer...');
+        recorder.requestData?.();
         recorder.stop();
         setIsRecording(false);
     };
@@ -882,6 +1008,16 @@ export default function InterviewSession() {
             const nextMode = modeAtStop === 'questioning' ? 'questioning' : 'user_intro';
             beginUserTurn(nextMode, questionIdAtStop);
         });
+    };
+
+    const retryUserIntroAfterUnclearAudio = (message = "I couldn't hear your introduction clearly. Please introduce yourself once more.") => {
+        if (isEndingRef.current || codingTransitionActiveRef.current) {
+            return;
+        }
+        setError(null);
+        setTurn('ai');
+        setSessionNotice(message);
+        void speakWithPreferredFemaleVoice(message, () => beginUserTurn('user_intro'));
     };
 
     const startRecordingAuto = async (mode: RecordingMode, questionId?: string) => {
@@ -1031,9 +1167,7 @@ export default function InterviewSession() {
             }
 
             noResponseAttemptsRef.current = 0;
-            setQuestions([fallbackQuestion]);
-            setCurrentQuestionIndex(0);
-            activeQuestionIdRef.current = fallbackQuestion.id;
+            showQuestionNow(fallbackQuestion, 0);
             playGreetingThenFirstQuestion(greetingText || null, greetingAudioBase64 || null, fallbackQuestion);
             return true;
         } catch (fallbackErr) {
@@ -1044,8 +1178,9 @@ export default function InterviewSession() {
 
     const processAudioAnswer = async (audioBlob: Blob, modeHint?: RecordingMode | null, questionIdHint?: string) => {
         setLoading(true);
+        const resolvedMode = modeHint || recordingModeRef.current || (phase === 'user_intro' ? 'user_intro' : 'questioning');
         try {
-            const mode = modeHint || recordingModeRef.current || (phase === 'user_intro' ? 'user_intro' : 'questioning');
+            const mode = resolvedMode;
 
             if (mode === 'user_intro') {
                 let token = sessionTokenRef.current || sessionToken;
@@ -1099,7 +1234,8 @@ export default function InterviewSession() {
                         // Fallback path: resend intro as text using analyzed transcript
                         const transcript = analyzedIntroTranscript;
                         if (!transcript) {
-                            throw new Error('Could not detect your introduction clearly. Please try again.');
+                            retryUserIntroAfterUnclearAudio();
+                            return;
                         }
 
                         response = await axios.post(
@@ -1133,7 +1269,7 @@ export default function InterviewSession() {
                     }
                 }
 
-                const generatedQuestions = response.data.questions || [];
+                const generatedQuestions = (response.data.questions || []).slice(0, 1);
                 if (isEndingRef.current) {
                     return;
                 }
@@ -1152,10 +1288,9 @@ export default function InterviewSession() {
                 const greetingText = response.data?.greeting_text || null;
                 const greetingAudioBase64 = response.data?.greeting_audio_base64 || null;
                 noResponseAttemptsRef.current = 0;
-                setQuestions(generatedQuestions);
-                setCurrentQuestionIndex(0);
-                activeQuestionIdRef.current = generatedQuestions[0]?.id || null;
-                playGreetingThenFirstQuestion(greetingText, greetingAudioBase64, generatedQuestions[0]);
+                const firstGeneratedQuestion = generatedQuestions[0];
+                showQuestionNow(firstGeneratedQuestion, 0);
+                playGreetingThenFirstQuestion(greetingText, greetingAudioBase64, firstGeneratedQuestion);
                 return;
             }
 
@@ -1235,6 +1370,10 @@ export default function InterviewSession() {
             const fallbackError = err?.message || 'Unknown error';
             const message = backendError || fallbackError;
             console.error('Audio processing error:', err?.response?.data || err);
+            if (resolvedMode === 'user_intro' && /no user introduction|could not detect|transcript|audio/i.test(String(message))) {
+                retryUserIntroAfterUnclearAudio();
+                return;
+            }
             setError(`Failed to process audio: ${message}`);
         } finally {
             setLoading(false);
@@ -1279,7 +1418,11 @@ export default function InterviewSession() {
         }
     };
 
-    const recoverNextQuestionAfterAnswer = async (): Promise<{ question: Question | null; adaptiveDecision: AdaptiveDecision | null }> => {
+    const recoverNextQuestionAfterAnswer = async (
+        previousAnswerText?: string,
+        metricsForAnswer?: AudioMetrics | null,
+        topicForAnswer?: string | null
+    ): Promise<{ question: Question | null; adaptiveDecision: AdaptiveDecision | null }> => {
         try {
             let token = sessionTokenRef.current || sessionToken;
             if (!token) {
@@ -1298,9 +1441,9 @@ export default function InterviewSession() {
                 `${BACKEND_URL}/conversation/next-question`,
                 {
                     sessionId,
-                    previousAnswer: latestTranscriptRef.current || 'Please continue with the interview.',
-                    audioMetrics: audioMetrics || null,
-                    currentTopic: questions[currentQuestionIndex]?.topic || null
+                    previousAnswer: previousAnswerText || latestTranscriptRef.current || 'Please continue with the interview.',
+                    audioMetrics: metricsForAnswer || audioMetrics || null,
+                    currentTopic: topicForAnswer || questions[currentQuestionIndex]?.topic || null
                 },
                 {
                     headers: {
@@ -1329,7 +1472,12 @@ export default function InterviewSession() {
         };
     };
 
-    const goToNextTurn = (nextQuestionFromApi?: Question | null) => {
+    const goToNextTurn = (
+        nextQuestionFromApi?: Question | null,
+        previousAnswerText?: string,
+        metricsForAnswer?: AudioMetrics | null,
+        topicForAnswer?: string | null
+    ) => {
         if (isEndingRef.current) {
             return;
         }
@@ -1344,16 +1492,7 @@ export default function InterviewSession() {
             // Prefer adaptive question from API so the interview reacts to the latest user answer.
             if (nextQuestionFromApi) {
                 const nextIndex = currentQuestionIndex + 1;
-                setQuestions((prev) => {
-                    const updated = [...prev];
-                    if (updated[nextIndex]) {
-                        updated[nextIndex] = nextQuestionFromApi;
-                    } else {
-                        updated.push(nextQuestionFromApi);
-                    }
-                    return updated;
-                });
-                setCurrentQuestionIndex(nextIndex);
+                showQuestionNow(nextQuestionFromApi, nextIndex);
                 if (nextQuestionFromApi.audio_base64) {
                     playAudioFromBase64(nextQuestionFromApi.audio_base64, () => beginUserTurn('questioning', nextQuestionFromApi.id), nextQuestionFromApi.question_text);
                 } else {
@@ -1362,20 +1501,8 @@ export default function InterviewSession() {
                 return;
             }
 
-            if (currentQuestionIndex < questions.length - 1) {
-                const nextIndex = currentQuestionIndex + 1;
-                setCurrentQuestionIndex(nextIndex);
-                const nextQuestion = questions[nextIndex];
-                if (nextQuestion?.audio_base64) {
-                    playAudioFromBase64(nextQuestion.audio_base64, () => beginUserTurn('questioning', nextQuestion.id), nextQuestion.question_text);
-                } else {
-                    speakWithPreferredFemaleVoice(nextQuestion?.question_text || '', () => beginUserTurn('questioning', nextQuestion?.id));
-                }
-                return;
-            }
-
             void (async () => {
-                const recovered = await recoverNextQuestionAfterAnswer();
+                const recovered = await recoverNextQuestionAfterAnswer(previousAnswerText, metricsForAnswer, topicForAnswer);
                 const recoveredQuestion = recovered.question;
                 if (!recoveredQuestion) {
                     setError('Could not load the next question. Please try once more.');
@@ -1386,17 +1513,7 @@ export default function InterviewSession() {
                     setSessionNotice(formatAdaptiveNotice(recovered.adaptiveDecision));
                 }
                 const nextIndex = currentQuestionIndex + 1;
-                setQuestions((prev) => {
-                    const updated = [...prev];
-                    if (updated[nextIndex]) {
-                        updated[nextIndex] = recoveredQuestion;
-                    } else {
-                        updated.push(recoveredQuestion);
-                    }
-                    return updated;
-                });
-                setCurrentQuestionIndex(nextIndex);
-                setPhase('questioning');
+                showQuestionNow(recoveredQuestion, nextIndex);
                 setTurn('ai');
                 if (recoveredQuestion.audio_base64) {
                     playAudioFromBase64(
@@ -1443,11 +1560,21 @@ export default function InterviewSession() {
         if (greetingText?.trim() || greetingAudioBase64) {
             if (greetingAudioBase64) {
                 playAudioFromBase64(greetingAudioBase64, () => {
-                    scheduleManagedTimeout(playFirstQuestion, 350);
+                    const sequenceAtGreetingEnd = aiSpeechSequenceRef.current;
+                    scheduleManagedTimeout(() => {
+                        if (isCurrentAiSpeechSequence(sequenceAtGreetingEnd)) {
+                            playFirstQuestion();
+                        }
+                    }, 350);
                 }, greetingText || undefined);
             } else {
                 speakWithPreferredFemaleVoice(greetingText || '', () => {
-                    scheduleManagedTimeout(playFirstQuestion, 350);
+                    const sequenceAtGreetingEnd = aiSpeechSequenceRef.current;
+                    scheduleManagedTimeout(() => {
+                        if (isCurrentAiSpeechSequence(sequenceAtGreetingEnd)) {
+                            playFirstQuestion();
+                        }
+                    }, 350);
                 });
             }
             return;
@@ -1462,10 +1589,8 @@ export default function InterviewSession() {
         }
         codingTransitionActiveRef.current = true;
         if (typeof window !== 'undefined') {
-            const indexedNextQuestion = questions[currentQuestionIndex + 1];
             const pendingQuestionId =
                 nextQuestionAfterRound?.id ||
-                indexedNextQuestion?.id ||
                 activeQuestionIdRef.current ||
                 questions[currentQuestionIndex]?.id ||
                 null;
@@ -1474,6 +1599,7 @@ export default function InterviewSession() {
             }
             // We already speak transition on this page; suppress duplicate intro voice on coding page load.
             sessionStorage.setItem(`ic_skip_coding_intro_audio_${sessionId}`, '1');
+            sessionStorage.setItem(`ic_interviewer_gender_${sessionId}`, interviewerGenderRef.current);
         }
 
         // Pause ongoing capture/playback but keep session active for transition narration.
@@ -1502,7 +1628,7 @@ export default function InterviewSession() {
                 {
                     params: {
                         text: transitionMessage,
-                        voice: 'female_friendly'
+                        voice: getInterviewerVoiceParam()
                     }
                 }
             );
@@ -1565,6 +1691,7 @@ export default function InterviewSession() {
                 throw new Error('No active question found for this answer.');
             }
             activeQuestionIdRef.current = resolvedQuestionId;
+            const questionForAnsweredTurn = questions[currentQuestionIndex] || null;
 
             const response = await axios.post(
                 `${BACKEND_URL}/interviews/answer`,
@@ -1603,11 +1730,16 @@ export default function InterviewSession() {
             setSpokenAnswersCount(nextCount);
 
             if (codingRoundEnabled && !codingRoundCompleted && nextCount >= CODING_ROUND_TRIGGER_AFTER_ANSWERS) {
-                await startCodingRound(next_question || null);
+                const adaptiveQuestionForResume = next_question || (await recoverNextQuestionAfterAnswer(
+                    text,
+                    metrics,
+                    questionForAnsweredTurn?.topic || null
+                )).question;
+                await startCodingRound(adaptiveQuestionForResume || null);
                 return;
             }
 
-            goToNextTurn(next_question || null);
+            goToNextTurn(next_question || null, text, metrics, questionForAnsweredTurn?.topic || null);
             return response.data;
         } catch (err: any) {
             const backendError = err?.response?.data?.error || err?.response?.data?.detail;
@@ -1681,7 +1813,7 @@ export default function InterviewSession() {
                     { headers: { Authorization: `Bearer ${token}` } }
                 );
 
-                const generatedQuestions = response.data.questions || [];
+                const generatedQuestions = (response.data.questions || []).slice(0, 1);
                 if (!generatedQuestions.length) {
                     const recovered = await recoverWithFallbackIntroQuestion(
                         token,
@@ -1697,11 +1829,10 @@ export default function InterviewSession() {
                 }
                 const greetingText = response.data?.greeting_text || null;
                 const greetingAudioBase64 = response.data?.greeting_audio_base64 || null;
-                setQuestions(generatedQuestions);
-                setCurrentQuestionIndex(0);
-                activeQuestionIdRef.current = generatedQuestions[0]?.id || null;
+                const firstGeneratedQuestion = generatedQuestions[0];
+                showQuestionNow(firstGeneratedQuestion, 0);
                 setTextAnswer('');
-                playGreetingThenFirstQuestion(greetingText, greetingAudioBase64, generatedQuestions[0]);
+                playGreetingThenFirstQuestion(greetingText, greetingAudioBase64, firstGeneratedQuestion);
             } catch (err) {
                 console.error('Text introduction error:', err);
                 setError('Failed to process introduction');
@@ -1732,6 +1863,14 @@ export default function InterviewSession() {
     };
 
     const currentQuestion = questions[currentQuestionIndex];
+    const currentQuestionDifficulty = currentQuestion?.difficulty ?? (currentQuestion as any)?.difficulty_level;
+    const currentPromptText = activePromptText || (
+        phase === 'ai_intro'
+            ? (aiIntroText || 'Preparing introduction...')
+            : phase === 'user_intro'
+                ? 'Introduce yourself, your experience, and what you are looking for.'
+                : currentQuestion?.question_text || ''
+    );
     const userWaveScales = [
         0.22 + (micLevel * 0.95),
         0.28 + (micLevel * 1.1),
@@ -1763,7 +1902,7 @@ export default function InterviewSession() {
                 </div>
 
                     <div className="flex items-center gap-2">
-                    {process.env.NODE_ENV !== 'production' && (
+                    {process.env.NODE_ENV !== 'production' && codingRoundEnabled && (
                         <button
                             onClick={() => startCodingRound(null)}
                             className="hidden rounded-md border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-100 transition hover:bg-amber-500/20 md:inline-flex"
@@ -1785,7 +1924,7 @@ export default function InterviewSession() {
                         End Interview
                     </button>
                     <button
-                        onClick={() => router.push('/dashboard')}
+                        onClick={closeMeetingNow}
                         aria-label="Close meeting"
                         title="Close"
                         className="flex h-10 w-10 items-center justify-center rounded-md border border-white/10 bg-white/5 text-zinc-300 transition hover:bg-white/10 hover:text-white"
@@ -1795,19 +1934,42 @@ export default function InterviewSession() {
                 </div>
             </header>
 
-            <main className="grid min-h-[calc(100vh-144px)] grid-cols-1 gap-0 lg:grid-cols-[1fr_380px]">
-                <section className="flex min-h-[560px] flex-col bg-[#111111]">
-                    <div className="grid flex-1 grid-cols-1 gap-3 p-3 md:grid-cols-2 md:p-5">
-                        <div className={`relative min-h-[280px] overflow-hidden rounded-lg border bg-[#202020] shadow-2xl transition ${turn === 'ai'
-                            ? 'border-sky-400/70 ring-2 ring-sky-400/25'
-                            : 'border-white/10'
+            <main className="grid h-[calc(100vh-64px)] min-h-[560px] grid-cols-1 gap-0 overflow-hidden lg:grid-cols-[1fr_380px]">
+                <section className="flex min-h-0 flex-col bg-[#111111]">
+                    <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-2 gap-3 p-3 md:grid-cols-2 md:grid-rows-1 md:p-5">
+                        <div className={`relative h-full min-h-0 overflow-hidden rounded-lg border bg-[#202020] shadow-2xl outline outline-2 outline-offset-[-2px] transition-colors ${turn === 'ai'
+                            ? 'border-sky-400/70 outline-sky-400/55'
+                            : 'border-white/10 outline-transparent'
                             }`}>
                             <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_20%,rgba(14,165,233,0.22),transparent_34%),linear-gradient(145deg,#242424,#151515)]" />
-                            <div className="relative flex h-full min-h-[280px] flex-col items-center justify-center p-6 text-center">
-                                <div className={`flex h-28 w-28 items-center justify-center rounded-full border border-sky-300/25 bg-sky-500/15 ${isPlayingAudio ? 'animate-live-pulse' : ''}`}>
-                                    <Volume2 size={44} className={isPlayingAudio ? 'text-sky-200' : 'text-zinc-300'} />
-                                </div>
-                                <h2 className="mt-5 text-xl font-semibold text-white">AI Interviewer</h2>
+                            <div className="relative flex h-full min-h-0 flex-col items-center justify-center p-6 text-center">
+                                <div
+  className={`relative h-36 w-36 overflow-hidden rounded-full border border-sky-300/30 bg-gradient-to-br from-sky-500/20 to-slate-900 shadow-2xl shadow-sky-950/40 ${
+    isPlayingAudio ? 'animate-live-pulse scale-105' : ''
+  } transition-all duration-300`}
+>
+  <img
+  src={
+    interviewerGender === 'male'
+      ? '/images/ai-interviewer-male.png'
+      : '/images/ai-interviewer-female.png'
+  }
+  alt={`${interviewerName} AI interviewer avatar`}
+  className="h-full w-full object-contain scale-125"
+ />
+  {/* soft overlay glow */}
+  <div className="absolute inset-0 bg-gradient-to-t from-black/20 via-transparent to-sky-300/10" />
+
+  {/* speaker icon */}
+  <div className="absolute bottom-3 right-3 flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-black/60 backdrop-blur-md shadow-lg">
+    <Volume2
+      size={16}
+      className={isPlayingAudio ? 'text-sky-200 animate-pulse' : 'text-zinc-300'}
+    />
+  </div>
+</div>
+                                <h2 className="mt-5 text-xl font-semibold text-white">{interviewerName}</h2>
+                                <p className="mt-1 max-w-xs text-sm leading-5 text-zinc-300">{interviewerDescription}</p>
                                 <div className="mt-3 flex items-center gap-2 rounded-md bg-black/35 px-3 py-1.5 text-sm text-zinc-200">
                                     <span className={`h-2.5 w-2.5 rounded-full ${isPlayingAudio ? 'bg-sky-300' : 'bg-zinc-500'}`} />
                                     {isPlayingAudio ? 'Speaking' : turn === 'user' && isRecording ? 'Listening' : 'Ready'}
@@ -1821,24 +1983,24 @@ export default function InterviewSession() {
                             </div>
                             <div className="absolute bottom-3 left-3 flex items-center gap-2 rounded bg-black/55 px-2.5 py-1.5 text-sm font-medium text-white backdrop-blur">
                                 <Volume2 size={15} />
-                                Interviewer
+                                AI Interviewer
                             </div>
                         </div>
 
-                        <div className={`relative min-h-[280px] overflow-hidden rounded-lg border bg-[#202020] shadow-2xl transition ${turn === 'user'
-                            ? 'border-emerald-400/70 ring-2 ring-emerald-400/25'
-                            : 'border-white/10'
+                        <div className={`relative h-full min-h-0 overflow-hidden rounded-lg border bg-[#202020] shadow-2xl outline outline-2 outline-offset-[-2px] transition-colors ${turn === 'user'
+                            ? 'border-emerald-400/70 outline-emerald-400/55'
+                            : 'border-white/10 outline-transparent'
                             }`}>
                             {cameraStatus === 'ready' && cameraEnabled ? (
                                 <video
                                     ref={videoRef}
-                                    className="h-full min-h-[280px] w-full object-cover"
+                                    className="h-full min-h-0 w-full object-cover"
                                     autoPlay
                                     muted
                                     playsInline
                                 />
                             ) : (
-                                <div className="flex h-full min-h-[280px] flex-col items-center justify-center bg-[linear-gradient(145deg,#252525,#161616)] p-6 text-center">
+                                <div className="flex h-full min-h-0 flex-col items-center justify-center bg-[linear-gradient(145deg,#252525,#161616)] p-6 text-center">
                                     <div className="flex h-28 w-28 items-center justify-center rounded-full border border-white/10 bg-white/5">
                                         {cameraStatus === 'requesting' ? (
                                             <Loader2 size={42} className="animate-spin text-zinc-300" />
@@ -1889,6 +2051,16 @@ export default function InterviewSession() {
                                 {cameraStatus === 'ready' && cameraEnabled ? <Camera size={15} /> : <CameraOff size={15} />}
                                 Candidate
                             </div>
+                            {isRecording && turn === 'user' && (
+                                <button
+                                    onClick={handleManualSubmitRecording}
+                                    disabled={loading}
+                                    className="absolute bottom-3 right-3 inline-flex items-center gap-2 rounded-md bg-emerald-500 px-3 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-950/30 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                    <Square size={14} fill="currentColor" />
+                                    Stop & Submit
+                                </button>
+                            )}
                         </div>
                     </div>
 
@@ -1911,17 +2083,13 @@ export default function InterviewSession() {
                         <section className="rounded-lg border border-white/10 bg-[#282828] p-4">
                             <div className="mb-3 flex items-center justify-between gap-3">
                                 <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Current Prompt</p>
-                                {currentQuestion?.difficulty && (
-                                    <span className="rounded bg-white/10 px-2 py-1 text-xs text-zinc-300">Level {currentQuestion.difficulty}</span>
+                                {currentQuestionDifficulty && (
+                                    <span className="rounded bg-white/10 px-2 py-1 text-xs text-zinc-300">Level {currentQuestionDifficulty}</span>
                                 )}
                             </div>
-                            {phase === 'ai_intro' && <p className="text-sm leading-6 text-zinc-100">{aiIntroText || 'Preparing introduction...'}</p>}
-                            {phase === 'user_intro' && (
-                                <p className="text-sm leading-6 text-zinc-100">Introduce yourself, your experience, and what you are looking for.</p>
-                            )}
-                            {phase === 'questioning' && currentQuestion && (
-                                <p className="text-sm leading-6 text-zinc-100">{currentQuestion.question_text}</p>
-                            )}
+                            <p className="text-sm leading-6 text-zinc-100">
+                                {currentPromptText || 'Waiting for the next prompt...'}
+                            </p>
                         </section>
 
                         {(cameraStatus === 'requesting' || cameraStatus === 'blocked' || cameraStatus === 'unsupported') && (

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -12,6 +12,8 @@ import {
     Gauge,
     MessageSquare,
     Mic,
+    PauseCircle,
+    PlayCircle,
     SkipForward,
     Sparkles,
     Target
@@ -42,6 +44,9 @@ export default function InterviewReport({ params }: { params: { id: string } }) 
     const { id } = params;
     const [loading, setLoading] = useState(true);
     const [reportData, setReportData] = useState<ReportData | null>(null);
+    const [playingAnswerId, setPlayingAnswerId] = useState<string | null>(null);
+    const [resolvedAudioUrls, setResolvedAudioUrls] = useState<Record<string, string>>({});
+    const answerAudioRef = useRef<HTMLAudioElement | null>(null);
 
     useEffect(() => {
         const fetchReport = async () => {
@@ -76,6 +81,51 @@ export default function InterviewReport({ params }: { params: { id: string } }) 
         if (!Array.isArray(reportData?.report_questions)) return [];
         return reportData!.report_questions;
     }, [reportData]);
+
+    useEffect(() => {
+        const resolveAudioUrls = async () => {
+            const entries = reportQuestions
+                .map((item) => item?.answer)
+                .filter((answer) => answer?.id && answer?.audio_url);
+
+            if (!entries.length) {
+                setResolvedAudioUrls({});
+                return;
+            }
+
+            const resolvedPairs = await Promise.all(entries.map(async (answer) => {
+                const playableUrl = await resolveSupabaseAudioUrl(answer.audio_url);
+                return [answer.id, playableUrl] as const;
+            }));
+
+            setResolvedAudioUrls(Object.fromEntries(resolvedPairs));
+        };
+
+        void resolveAudioUrls();
+    }, [reportQuestions]);
+
+    const handlePlayAnswer = async (answerId: string, audioUrl: string) => {
+        const player = answerAudioRef.current;
+        const playableUrl = resolvedAudioUrls[answerId] || await resolveSupabaseAudioUrl(audioUrl);
+        if (!player || !playableUrl) return;
+
+        if (playingAnswerId === answerId && !player.paused) {
+            player.pause();
+            setPlayingAnswerId(null);
+            return;
+        }
+
+        player.pause();
+        player.src = playableUrl;
+        player.load();
+        try {
+            await player.play();
+            setPlayingAnswerId(answerId);
+        } catch (error) {
+            console.error('Could not play answer audio:', error);
+            setPlayingAnswerId(null);
+        }
+    };
 
     if (loading) {
         return (
@@ -113,6 +163,17 @@ export default function InterviewReport({ params }: { params: { id: string } }) 
 
     return (
         <div className="app-shell px-4 py-6 md:px-8 md:py-8">
+            <audio
+                ref={answerAudioRef}
+                className="hidden"
+                preload="none"
+                onEnded={() => setPlayingAnswerId(null)}
+                onPause={() => {
+                    if (answerAudioRef.current?.ended) {
+                        setPlayingAnswerId(null);
+                    }
+                }}
+            />
             <div className="mx-auto max-w-7xl space-y-6">
                 <section className="glass-card overflow-hidden">
                     <div className="grid gap-6 p-6 md:grid-cols-[1.5fr,0.9fr] md:p-8">
@@ -509,6 +570,7 @@ export default function InterviewReport({ params }: { params: { id: string } }) 
                                 const consistency = answer?.resume_consistency;
                                 const rewrite = item.answer_rewrite;
                                 const displayAnswer = sanitizeAnswer(answer?.answer_text);
+                                const playableAudioUrl = answer?.id ? resolvedAudioUrls[answer.id] || answer?.audio_url : answer?.audio_url;
 
                                 return (
                                     <article key={item.id} className="rounded-[26px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.045),rgba(255,255,255,0.02))] p-5">
@@ -556,12 +618,16 @@ export default function InterviewReport({ params }: { params: { id: string } }) 
                                                         <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Answer Audio</p>
                                                         {answer?.audio_url ? (
                                                             <div className="mt-3 space-y-3">
-                                                                <audio controls className="w-full" preload="none">
-                                                                    <source src={answer.audio_url} type={guessAudioMime(answer.audio_url)} />
-                                                                    Your browser could not play this audio file.
-                                                                </audio>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handlePlayAnswer(answer.id, answer.audio_url)}
+                                                                    className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-cyan-300/25 bg-cyan-400/10 px-4 py-3 text-sm font-medium text-cyan-100 transition hover:bg-cyan-400/20"
+                                                                >
+                                                                    {playingAnswerId === answer.id ? <PauseCircle size={18} /> : <PlayCircle size={18} />}
+                                                                    {playingAnswerId === answer.id ? 'Pause Answer' : 'Play Answer'}
+                                                                </button>
                                                                 <a
-                                                                    href={answer.audio_url}
+                                                                    href={playableAudioUrl}
                                                                     target="_blank"
                                                                     rel="noreferrer"
                                                                     className="inline-flex text-xs text-cyan-300 transition hover:text-cyan-200"
@@ -917,6 +983,51 @@ function guessAudioMime(url: string) {
     if (normalized.includes('.wav')) return 'audio/wav';
     if (normalized.includes('.ogg')) return 'audio/ogg';
     return 'audio/webm';
+}
+
+function extractVoiceAnswerPath(audioUrl: string) {
+    const value = String(audioUrl || '').trim();
+    if (!value) return null;
+    if (!/^https?:\/\//i.test(value)) {
+        return value.replace(/^\/+/, '');
+    }
+
+    try {
+        const url = new URL(value);
+        const marker = '/storage/v1/object/public/voice-answers/';
+        const signedMarker = '/storage/v1/object/sign/voice-answers/';
+        const publicIndex = url.pathname.indexOf(marker);
+        if (publicIndex >= 0) {
+            return decodeURIComponent(url.pathname.slice(publicIndex + marker.length));
+        }
+        const signedIndex = url.pathname.indexOf(signedMarker);
+        if (signedIndex >= 0) {
+            return decodeURIComponent(url.pathname.slice(signedIndex + signedMarker.length));
+        }
+    } catch {
+        return null;
+    }
+
+    return null;
+}
+
+async function resolveSupabaseAudioUrl(audioUrl: string) {
+    const storagePath = extractVoiceAnswerPath(audioUrl);
+    if (!storagePath) return audioUrl;
+
+    const { data: signedData } = await supabase.storage
+        .from('voice-answers')
+        .createSignedUrl(storagePath, 60 * 60);
+
+    if (signedData?.signedUrl) {
+        return signedData.signedUrl;
+    }
+
+    const { data: publicData } = supabase.storage
+        .from('voice-answers')
+        .getPublicUrl(storagePath);
+
+    return publicData?.publicUrl || audioUrl;
 }
 
 function findTopStrategy(strategies: Record<string, number> | undefined) {

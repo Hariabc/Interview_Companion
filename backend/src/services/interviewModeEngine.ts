@@ -19,30 +19,63 @@ const MODE_SET = new Set<InterviewMode>([
     'rapid_fire'
 ]);
 
+const INTERVIEWER_PROFILES = [
+    { name: 'Aarika', gender: 'female' },
+    { name: 'Ananya', gender: 'female' },
+    { name: 'Diya', gender: 'female' },
+    { name: 'Isha', gender: 'female' },
+    { name: 'Kavya', gender: 'female' },
+    { name: 'Meera', gender: 'female' },
+    { name: 'Naina', gender: 'female' },
+    { name: 'Priya', gender: 'female' },
+    { name: 'Riya', gender: 'female' },
+    { name: 'Sara', gender: 'female' },
+    { name: 'Aditya', gender: 'male' },
+    { name: 'Arjun', gender: 'male' },
+    { name: 'Karan', gender: 'male' },
+    { name: 'Rohan', gender: 'male' },
+    { name: 'Vikram', gender: 'male' }
+];
+
 export function normalizeMode(rawMode: any): InterviewMode {
     const mode = String(rawMode || '').trim().toLowerCase() as InterviewMode;
     return MODE_SET.has(mode) ? mode : 'balanced';
 }
 
-export function buildModeIntroScript(mode: InterviewMode, userName?: string | null): string {
+export function pickInterviewerProfile(seed?: string | null): { name: string; gender: string } {
+    const value = String(seed || '').trim();
+    if (!value) {
+        return INTERVIEWER_PROFILES[Math.floor(Math.random() * INTERVIEWER_PROFILES.length)];
+    }
+    const hash = value.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
+    return INTERVIEWER_PROFILES[hash % INTERVIEWER_PROFILES.length];
+}
+
+export function pickInterviewerName(seed?: string | null): string {
+    return pickInterviewerProfile(seed).name;
+}
+
+export function buildModeIntroScript(mode: InterviewMode, userName?: string | null, interviewerName?: string | null): string {
     const hello = userName?.trim() ? `Hi ${userName.trim()},` : 'Hi,';
+    const name = interviewerName?.trim() || pickInterviewerName();
+    const intro = `${hello} I am ${name}, your AI interviewer for this session.`;
     switch (mode) {
         case 'salary_negotiation':
-            return `${hello} this is Salary Negotiation mode. First, introduce yourself. Then share the role and level you are targeting, your current or last compensation range, your expected range, and top priorities so we can run a realistic negotiation simulation.`;
+            return `${intro} We will begin with Salary Negotiation mode. First, introduce yourself. Then share the role and level you are targeting, your current or last compensation range, your expected range, and top priorities so we can run a realistic negotiation simulation.`;
         case 'hr_round':
-            return `${hello} this is HR Round mode. Please introduce yourself and share the kind of role and team environment you are aiming for. Then we will move into communication, collaboration, and conflict scenarios.`;
+            return `${intro} We will begin with HR Round mode. Please introduce yourself and share the kind of role and team environment you are aiming for. Then we will move into communication, collaboration, and conflict scenarios.`;
         case 'dsa_round':
-            return `${hello} this is DSA Round mode. Please introduce yourself and mention your preferred programming language. Then we will proceed with algorithmic problem-solving and complexity-focused questions.`;
+            return `${intro} We will begin with DSA Round mode. Please introduce yourself and mention your preferred programming language. Then we will proceed with algorithmic problem-solving and complexity-focused questions.`;
         case 'system_design':
-            return `${hello} this is System Design mode. Please introduce yourself and mention a type of system you like building. Then we will discuss architecture, scaling, and reliability trade-offs.`;
+            return `${intro} We will begin with System Design mode. Please introduce yourself and mention a type of system you like building. Then we will discuss architecture, scaling, and reliability trade-offs.`;
         case 'behavioral_storytelling':
-            return `${hello} this is Behavioral Storytelling mode. Please introduce yourself and share one project you are proud of. Then we will go through impact-oriented STAR questions.`;
+            return `${intro} We will begin with Behavioral Storytelling mode. Please introduce yourself and share one project you are proud of. Then we will go through impact-oriented STAR questions.`;
         case 'managerial_leadership':
-            return `${hello} this is Managerial Leadership mode. Please introduce yourself and your leadership scope. Then we will discuss people management, prioritization, and stakeholder alignment.`;
+            return `${intro} We will begin with Managerial Leadership mode. Please introduce yourself and your leadership scope. Then we will discuss people management, prioritization, and stakeholder alignment.`;
         case 'rapid_fire':
-            return `${hello} this is Rapid Fire mode. Please introduce yourself briefly. Then we will run fast, short questions across mixed topics.`;
+            return `${intro} We will begin with Rapid Fire mode. Please introduce yourself briefly. Then we will run fast, short questions across mixed topics.`;
         default:
-            return `${hello} this is Balanced Interview mode. Please introduce yourself and your background, then we will continue with a blend of technical and behavioral questions.`;
+            return `${intro} We will begin with Balanced Interview mode. Please introduce yourself and your background, then we will continue with a blend of technical and behavioral questions.`;
     }
 }
 

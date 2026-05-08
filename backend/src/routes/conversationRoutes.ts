@@ -12,6 +12,7 @@ import {
     buildRoleClarificationPrompt,
     extractRoleSignals,
     normalizeMode,
+    pickInterviewerProfile,
     shouldRequestRoleClarification
 } from '../services/interviewModeEngine';
 
@@ -80,6 +81,12 @@ function difficultyPreferenceToHint(preference: any): number {
     if (normalized === 'easy') return 1;
     if (normalized === 'hard') return 4;
     return 2;
+}
+
+function voiceForInterviewerGender(gender: any): 'female_friendly' | 'male_professional' {
+    return String(gender || '').trim().toLowerCase() === 'male'
+        ? 'male_professional'
+        : 'female_friendly';
 }
 
 function buildFallbackQuestion(topicHint?: string | null, difficultyHint: number = 2, modeHint: any = 'balanced') {
@@ -236,10 +243,12 @@ router.post('/start', authenticate, async (req: AuthRequest, res) => {
 
         const existingContext = session?.conversation_context || {};
         const interviewMode = normalizeMode(existingContext?.interview_mode);
-        const intro_text = buildModeIntroScript(interviewMode, userName || null);
+        const interviewerProfile = pickInterviewerProfile(`${sessionId}-${Date.now()}-${Math.random()}`);
+        const intro_text = buildModeIntroScript(interviewMode, userName || null, interviewerProfile.name);
+        const interviewerVoice = voiceForInterviewerGender(interviewerProfile.gender);
 
         let audio_base64: string | null = null;
-        let voice_used = 'female_friendly';
+        let voice_used = interviewerVoice;
         try {
             const tts = await axios.post(
                 `${ML_SERVICE_URL}/synthesize_speech`,
@@ -247,12 +256,12 @@ router.post('/start', authenticate, async (req: AuthRequest, res) => {
                 {
                     params: {
                         text: intro_text,
-                        voice: 'female_friendly'
+                        voice: interviewerVoice
                     }
                 }
             );
             audio_base64 = tts.data?.audio_base64 || null;
-            voice_used = tts.data?.voice_used || 'female_friendly';
+            voice_used = tts.data?.voice_used || interviewerVoice;
         } catch (ttsError: any) {
             console.error('TTS failed for intro:', ttsError?.response?.data || ttsError?.message);
         }
@@ -278,6 +287,8 @@ router.post('/start', authenticate, async (req: AuthRequest, res) => {
             .update({
                 conversation_context: {
                     ...existingContext,
+                    interviewer_name: interviewerProfile.name,
+                    interviewer_gender: interviewerProfile.gender,
                     mode_runtime: buildModeRuntimeForStart(interviewMode)
                 }
             })
@@ -287,6 +298,8 @@ router.post('/start', authenticate, async (req: AuthRequest, res) => {
             intro_text,
             audio_base64,
             voice_used,
+            interviewer_name: interviewerProfile.name,
+            interviewer_gender: interviewerProfile.gender,
             conversation_turn_id: conversationTurn?.id
         });
 
@@ -384,6 +397,7 @@ router.post('/user-response', authenticate, upload.single('audio'), async (req: 
         const userAnalysis = analysisResponse.data;
         const existingContext = session?.conversation_context || {};
         const configuredMode = normalizeMode(existingContext?.interview_mode);
+        const interviewerVoice = voiceForInterviewerGender(existingContext?.interviewer_gender);
         const roleSignals = extractRoleSignals(userIntroTextValue);
         const modeRuntime = existingContext?.mode_runtime || {};
 
@@ -400,7 +414,7 @@ router.post('/user-response', authenticate, upload.single('audio'), async (req: 
                     {
                         params: {
                             text: followUpPrompt,
-                            voice: 'female_friendly'
+                            voice: interviewerVoice
                         }
                     }
                 );
@@ -448,14 +462,16 @@ router.post('/user-response', authenticate, upload.single('audio'), async (req: 
             });
         }
 
-        // Generate contextual questions
+        // Generate only the immediate first question. Every later question is generated
+        // after the candidate answers, so the interview stays adaptive instead of
+        // storing a pre-generated queue.
         const configuredTopics = Array.isArray(existingContext?.selected_topics)
             ? existingContext?.selected_topics
             : [];
         const requestedTopics = Array.isArray(req.body.selectedTopics) ? req.body.selectedTopics : [];
         const topicSource = requestedTopics.length > 0 ? requestedTopics : configuredTopics;
         const selectedTopicsWithTechnical = withMandatoryTechnicalTopics(topicSource, modeRequiresTechnicalTopics(configuredMode));
-        const configuredCount = Math.max(2, Math.min(8, Number(existingContext?.target_questions) || 3));
+        const immediateQuestionCount = 1;
         const initialDifficulty = difficultyPreferenceToHint(existingContext?.difficulty_preference);
         const { data: existingSessionQuestions } = await supabase
             .from('questions')
@@ -478,7 +494,7 @@ router.post('/user-response', authenticate, upload.single('audio'), async (req: 
             },
             resume_text: resumeText,
             selected_topics: selectedTopicsWithTechnical,
-            count: configuredCount,
+            count: immediateQuestionCount,
             difficulty_hint: initialDifficulty,
             asked_questions: askedQuestions,
             diversity_nonce: `${configuredMode}-${sessionId}-${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -487,10 +503,10 @@ router.post('/user-response', authenticate, upload.single('audio'), async (req: 
         const responseQuestions = Array.isArray(questionsResponse.data?.questions) ? questionsResponse.data.questions : [];
         const validQuestions = responseQuestions.filter((q: any) => String(q?.question_text || '').trim());
         const questions = validQuestions.length
-            ? validQuestions
+            ? validQuestions.slice(0, immediateQuestionCount)
             : [buildFallbackQuestion(selectedTopicsWithTechnical?.[0] || userAnalysis?.key_topics?.[0], initialDifficulty, configuredMode)];
 
-        // Save questions to database
+        // Save only the question being asked now.
         const sanitizedQuestions = questions.map((q: any) => ({
             ...q,
             session_id: sessionId,
@@ -518,7 +534,7 @@ router.post('/user-response', authenticate, upload.single('audio'), async (req: 
                         {
                             params: {
                                 text: q.question_text,
-                                voice: "female_friendly"
+                                voice: interviewerVoice
                             }
                         }
                     );
@@ -546,7 +562,7 @@ router.post('/user-response', authenticate, upload.single('audio'), async (req: 
                 {
                     params: {
                         text: greetingText,
-                        voice: 'female_friendly'
+                        voice: interviewerVoice
                     }
                 }
             );

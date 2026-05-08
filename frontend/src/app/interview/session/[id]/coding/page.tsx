@@ -8,6 +8,9 @@ import { Play, CheckCircle2, ArrowLeft, Code2, Gauge, TerminalSquare, Sparkles, 
 import { AppLoadingScreen } from '@/components/AppLoadingScreen';
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3000';
 const FEMALE_VOICE_HINTS = ['jenny', 'aria', 'zira', 'sara', 'emma', 'female', 'woman'];
+const MALE_VOICE_HINTS = ['guy', 'davis', 'mark', 'david', 'andrew', 'male', 'man'];
+
+type InterviewerGender = 'female' | 'male';
 
 interface CodingChallenge {
     id: string;
@@ -17,6 +20,7 @@ interface CodingChallenge {
     starter_code: Record<string, string>;
     visible_tests: Array<{ input: string; expected: string }>;
     intro_audio_base64?: string | null;
+    interviewer_gender?: InterviewerGender;
 }
 
 interface CodingRunResult {
@@ -82,6 +86,7 @@ export default function CodingRoundPage() {
     const [error, setError] = useState<string | null>(null);
     const audioRef = useRef<HTMLAudioElement | null>(null);
     const hasInitializedRef = useRef(false);
+    const interviewerGenderRef = useRef<InterviewerGender>('female');
 
     const handleEditorMount = (editor: any, monaco: any) => {
         monaco.editor.defineTheme('interview-companion-dark', {
@@ -122,10 +127,11 @@ export default function CodingRoundPage() {
             utterance.rate = 1;
             utterance.pitch = 1;
             const voices = window.speechSynthesis.getVoices();
-            const preferredFemaleVoice =
-                voices.find((v) => FEMALE_VOICE_HINTS.some((hint) => v.name.toLowerCase().includes(hint))) ||
-                voices.find((v) => FEMALE_VOICE_HINTS.some((hint) => v.voiceURI.toLowerCase().includes(hint)));
-            if (preferredFemaleVoice) utterance.voice = preferredFemaleVoice;
+            const hints = interviewerGenderRef.current === 'male' ? MALE_VOICE_HINTS : FEMALE_VOICE_HINTS;
+            const preferredVoice =
+                voices.find((v) => hints.some((hint) => v.name.toLowerCase().includes(hint))) ||
+                voices.find((v) => hints.some((hint) => v.voiceURI.toLowerCase().includes(hint)));
+            if (preferredVoice) utterance.voice = preferredVoice;
             window.speechSynthesis.speak(utterance);
         } catch {
             // ignore fallback errors
@@ -163,6 +169,16 @@ export default function CodingRoundPage() {
                     headers: { Authorization: `Bearer ${session.access_token}` }
                 });
                 const payload = response.data as CodingChallenge;
+                const storedGender = typeof window !== 'undefined'
+                    ? sessionStorage.getItem(`ic_interviewer_gender_${sessionId}`)
+                    : null;
+                const gender =
+                    payload.interviewer_gender === 'male' || payload.interviewer_gender === 'female'
+                        ? payload.interviewer_gender
+                        : storedGender === 'male' || storedGender === 'female'
+                            ? storedGender
+                            : 'female';
+                interviewerGenderRef.current = gender;
                 setChallenge(payload);
                 setLanguage(payload.languages?.[0] || 'python');
                 setCodeByLanguage(payload.starter_code || {});

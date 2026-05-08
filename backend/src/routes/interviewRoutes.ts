@@ -8,7 +8,7 @@ const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
 const SKIP_ANSWER_MARKER = '[SKIPPED_BY_USER]';
 const MANDATORY_TECHNICAL_TOPICS = ['Data Structures and Algorithms'];
 const SCORE_ANSWER_TIMEOUT_MS = 9000;
-const NEXT_QUESTION_TIMEOUT_MS = 7000;
+const NEXT_QUESTION_TIMEOUT_MS = 15000;
 const SUPPORTED_MODES = new Set([
     'balanced',
     'hr_round',
@@ -1198,6 +1198,12 @@ router.get('/:sessionId/report', authenticate, async (req: AuthRequest, res) => 
             .order('created_at', { ascending: true });
 
         if (qError) throw qError;
+        const { data: conversationTurns } = await supabase
+            .from('conversation_turns')
+            .select('speaker, message_text, created_at')
+            .eq('session_id', sessionId)
+            .order('created_at', { ascending: true });
+
         const normalizedQuestions = (questions || []).map((q: any, index: number) => {
             const sortedAnswers = [...(q.answers || [])].sort((a: any, b: any) => {
                 const aTs = new Date(a.created_at || 0).getTime();
@@ -1242,7 +1248,13 @@ router.get('/:sessionId/report', authenticate, async (req: AuthRequest, res) => 
             };
         });
 
-        const qa_history = normalizedQuestions.map((q: any, index: number) => {
+        const askedQuestions = normalizedQuestions.filter((q: any) => (q.answers || []).length > 0);
+        const sessionDiscussionQuestions = askedQuestions.map((q: any, index: number) => ({
+            ...q,
+            order: index + 1
+        }));
+
+        const qa_history_base = sessionDiscussionQuestions.map((q: any, index: number) => {
             const latestAnswer = q.latest_answer || null;
             return {
                 order: index + 1,
@@ -1259,9 +1271,55 @@ router.get('/:sessionId/report', authenticate, async (req: AuthRequest, res) => 
             };
         });
 
-        const askedQuestions = normalizedQuestions.filter((q: any) => (q.answers || []).length > 0);
-        const answeredQuestions = askedQuestions.filter((q: any) => !q.latest_answer?.skipped);
-        const skippedQuestions = askedQuestions.filter((q: any) => q.latest_answer?.skipped);
+        const answeredQuestions = sessionDiscussionQuestions.filter((q: any) => !q.latest_answer?.skipped);
+        const skippedQuestions = sessionDiscussionQuestions.filter((q: any) => q.latest_answer?.skipped);
+        const userIntroAnswer = String(session?.user_intro_summary || '').trim();
+        const introAiTurn = (conversationTurns || []).find((turn: any) => turn?.speaker === 'ai');
+        const introUserTurn = (conversationTurns || []).find((turn: any) => turn?.speaker === 'user');
+        const introReportQuestion = userIntroAnswer ? {
+            id: `intro-${sessionId}`,
+            order: 1,
+            question_text: 'Please introduce yourself and share your background.',
+            topic: 'Introduction',
+            difficulty_level: null,
+            asked_at: introAiTurn?.created_at || session?.start_time || null,
+            attempts: 1,
+            answer: {
+                id: `intro-answer-${sessionId}`,
+                answer_text: userIntroAnswer,
+                transcript: userIntroAnswer,
+                audio_url: null,
+                created_at: introUserTurn?.created_at || null,
+                skipped: false,
+                score: null,
+                voice_metrics: null,
+                evidence: buildAnswerEvidence(userIntroAnswer, [], 'Please introduce yourself and share your background.'),
+                resume_consistency: buildResumeConsistency(userIntroAnswer, resumeSignals)
+            },
+            answer_rewrite: {
+                rewritten_answer: userIntroAnswer,
+                rewrite_summary: 'This is the candidate introduction captured at the start of the interview.'
+            }
+        } : null;
+        const qa_history = [
+            ...(introReportQuestion ? [{
+                order: 1,
+                question_id: introReportQuestion.id,
+                question_text: introReportQuestion.question_text,
+                topic: introReportQuestion.topic,
+                difficulty_level: introReportQuestion.difficulty_level,
+                asked_at: introReportQuestion.asked_at,
+                attempts: 1,
+                latest_answer_text: userIntroAnswer,
+                latest_answer_created_at: introReportQuestion.answer.created_at,
+                skipped: false,
+                latest_score: null
+            }] : []),
+            ...qa_history_base.map((item: any, index: number) => ({
+                ...item,
+                order: index + (introReportQuestion ? 2 : 1)
+            }))
+        ];
         const scoredAnswers = answeredQuestions
             .map((q: any) => q.latest_answer?.score)
             .filter(Boolean);
@@ -1304,7 +1362,7 @@ router.get('/:sessionId/report', authenticate, async (req: AuthRequest, res) => 
             ? Number(((end - start) / 60000).toFixed(1))
             : null;
 
-        const reportQuestionsBase = askedQuestions.map((q: any) => ({
+        const reportQuestionsBase = sessionDiscussionQuestions.map((q: any) => ({
             id: q.id,
             order: q.order,
             question_text: q.question_text,
@@ -1314,21 +1372,28 @@ router.get('/:sessionId/report', authenticate, async (req: AuthRequest, res) => 
             attempts: (q.answers || []).length,
             answer: q.latest_answer
         }));
-        const report_questions = await Promise.all(
+        const evaluated_report_questions = await Promise.all(
             reportQuestionsBase.map(async (q: any) => ({
                 ...q,
                 answer_rewrite: await buildAnswerRewrite(q)
             }))
         );
+        const report_questions = [
+            ...(introReportQuestion ? [introReportQuestion] : []),
+            ...evaluated_report_questions.map((q: any, index: number) => ({
+                ...q,
+                order: index + (introReportQuestion ? 2 : 1)
+            }))
+        ];
 
         const stats = {
-            total_questions_asked: askedQuestions.length,
-            answered_questions: answeredQuestions.length,
+            total_questions_asked: sessionDiscussionQuestions.length + (introReportQuestion ? 1 : 0),
+            answered_questions: answeredQuestions.length + (introReportQuestion ? 1 : 0),
             skipped_questions: skippedQuestions.length,
             audio_answers: answeredQuestions.filter((q: any) => q.latest_answer?.audio_url).length,
-            text_answers: answeredQuestions.filter((q: any) => !q.latest_answer?.audio_url).length,
-            completion_rate: askedQuestions.length
-                ? Number(((answeredQuestions.length / askedQuestions.length) * 100).toFixed(1))
+            text_answers: answeredQuestions.filter((q: any) => !q.latest_answer?.audio_url).length + (introReportQuestion ? 1 : 0),
+            completion_rate: sessionDiscussionQuestions.length + (introReportQuestion ? 1 : 0)
+                ? Number((((answeredQuestions.length + (introReportQuestion ? 1 : 0)) / (sessionDiscussionQuestions.length + (introReportQuestion ? 1 : 0))) * 100).toFixed(1))
                 : 0,
             average_final_score,
             average_semantic_score: average(scoredAnswers.map((score: any) => toNumber(score.semantic_score))),
@@ -1456,7 +1521,7 @@ router.get('/:sessionId/report', authenticate, async (req: AuthRequest, res) => 
 
         res.json({
             session,
-            questions: normalizedQuestions,
+            questions: sessionDiscussionQuestions,
             qa_history,
             report_questions,
             stats,

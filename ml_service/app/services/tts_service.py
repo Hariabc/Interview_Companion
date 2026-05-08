@@ -11,6 +11,41 @@ VOICES = {
     "male_professional": "en-US-DavisNeural"
 }
 
+MALE_VOICES = [
+    "en-US-DavisNeural",
+    "en-US-GuyNeural",
+    "en-US-AndrewNeural",
+    "en-GB-RyanNeural",
+    "en-IN-PrabhatNeural",
+]
+
+FEMALE_VOICES = [
+    "en-US-JennyNeural",
+    "en-US-AriaNeural",
+    "en-GB-SoniaNeural",
+    "en-IN-NeerjaNeural",
+]
+
+
+def build_voice_fallbacks(voice: str) -> list[str]:
+    voice_key = (voice or "female_friendly").strip()
+    resolved_voice = VOICES.get(voice_key, voice_key)
+    normalized = voice_key.lower()
+    resolved_normalized = resolved_voice.lower()
+
+    if "female" in normalized or any(name.lower() == resolved_normalized for name in FEMALE_VOICES):
+        candidates = [resolved_voice, *FEMALE_VOICES]
+    elif normalized.startswith("male") or any(name.lower() == resolved_normalized for name in MALE_VOICES):
+        candidates = [resolved_voice, *MALE_VOICES]
+    else:
+        candidates = [resolved_voice, *FEMALE_VOICES]
+
+    deduped = []
+    for candidate in candidates:
+        if candidate and candidate not in deduped:
+            deduped.append(candidate)
+    return deduped
+
 async def synthesize_speech_async(
     text: str, 
     voice: str = "female_friendly",
@@ -19,7 +54,7 @@ async def synthesize_speech_async(
     """
     Convert text to speech using Edge TTS with fallback voices.
     """
-    voices_to_try = [voice, "en-US-JennyNeural", "en-US-AriaNeural", "en-GB-SoniaNeural", "en-IN-NeerjaNeural"]
+    voices_to_try = build_voice_fallbacks(voice)
     
     last_error = None
     for v in voices_to_try:

@@ -9,7 +9,7 @@ import { supabase } from '../config/supabase';
 
 const router = express.Router();
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
-const CODING_ENABLED_MODES = new Set(['balanced', 'dsa_round', 'system_design', 'rapid_fire']);
+const CODING_ENABLED_MODES = new Set(['dsa_round', 'system_design', 'rapid_fire']);
 
 type CodingLanguage = 'Python' | 'Javascript' | 'Cpp' | 'Java' | 'Sql';
 
@@ -34,6 +34,12 @@ const challengeCache = new Map<string, GeneratedChallenge>();
 
 function codingEnabledForMode(mode: any) {
     return CODING_ENABLED_MODES.has(String(mode || 'balanced').trim().toLowerCase());
+}
+
+function voiceForInterviewerGender(gender: any): 'female_friendly' | 'male_professional' {
+    return String(gender || '').trim().toLowerCase() === 'male'
+        ? 'male_professional'
+        : 'female_friendly';
 }
 
 function normalizeOutput(s: string) {
@@ -290,6 +296,7 @@ router.get('/challenge', authenticate, async (req: AuthRequest, res) => {
         }
 
         const context = session?.conversation_context || {};
+        const interviewerVoice = voiceForInterviewerGender(context?.interviewer_gender);
         const topics = Array.isArray(context?.key_topics) && context.key_topics.length
             ? context.key_topics
             : (Array.isArray(context?.areas_of_interest) && context.areas_of_interest.length
@@ -337,7 +344,7 @@ router.get('/challenge', authenticate, async (req: AuthRequest, res) => {
             const tts = await axios.post(`${ML_SERVICE_URL}/synthesize_speech`, null, {
                 params: {
                     text: `Now let's switch to coding. ${challenge.title}.`,
-                    voice: 'female_friendly'
+                    voice: interviewerVoice
                 }
             });
             audio_base64 = tts.data?.audio_base64 || null;
@@ -352,7 +359,8 @@ router.get('/challenge', authenticate, async (req: AuthRequest, res) => {
             languages: challenge.languages,
             starter_code: challenge.starter_code,
             visible_tests: challenge.visible_tests,
-            intro_audio_base64: audio_base64
+            intro_audio_base64: audio_base64,
+            interviewer_gender: context?.interviewer_gender || 'female'
         });
     } catch (error: any) {
         return res.status(500).json({ error: error?.response?.data?.detail || error?.message || 'Failed to generate coding challenge' });
@@ -487,12 +495,19 @@ router.post('/submit', authenticate, async (req: AuthRequest, res) => {
             console.error('AI code feedback failed:', e);
         }
 
+        const { data: voiceSessionRow } = await supabase
+            .from('interview_sessions')
+            .select('conversation_context')
+            .eq('id', String(session_id))
+            .single();
+        const interviewerVoice = voiceForInterviewerGender(voiceSessionRow?.conversation_context?.interviewer_gender);
+
         let audio_base64: string | null = null;
         try {
             const tts = await axios.post(`${ML_SERVICE_URL}/synthesize_speech`, null, {
                 params: {
                     text: aiFeedback?.summary || (allPassed ? 'Nice work on the coding round.' : 'Let us improve this solution together.'),
-                    voice: 'female_friendly'
+                    voice: interviewerVoice
                 }
             });
             audio_base64 = tts.data?.audio_base64 || null;
