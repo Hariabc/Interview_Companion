@@ -18,6 +18,7 @@ from app.services.stt_service import transcribe_audio, transcribe_audio_url
 from app.services.tts_service import synthesize_speech
 from app.services.code_review_service import analyze_code_submission
 from app.services.coding_challenge_service import generate_personalized_coding_challenge
+from app.services.question_cache import clear_cache, get_cache_stats
 
 app = FastAPI(title="AI Interview ML Service")
 
@@ -54,6 +55,17 @@ class QuestionParams(BaseModel):
 @app.get("/")
 def health_check():
     return {"status": "healthy"}
+
+@app.get("/cache/stats")
+def cache_stats():
+    """Get cache statistics."""
+    return get_cache_stats()
+
+@app.post("/cache/clear")
+def cache_clear():
+    """Clear all cached questions."""
+    clear_cache()
+    return {"status": "success", "message": "Cache cleared"}
 
 @app.post("/parse_resume")
 async def parse_resume(file: UploadFile = File(...)):

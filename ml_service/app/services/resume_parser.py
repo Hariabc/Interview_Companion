@@ -1,12 +1,13 @@
 from pdfminer.high_level import extract_text
-import spacy
 import re
 
-nlp = spacy.load("en_core_web_sm")
+# Spacy NLP loading commented out for Python 3.14 compatibility
+# import spacy
+# nlp = spacy.load("en_core_web_sm")
 
 def parse_resume_pdf(file_path: str):
     text = extract_text(file_path)
-    doc = nlp(text)
+    # doc = nlp(text)  # Commented out for compatibility
     
     # Basic Skill Extraction (Heuristic/NER)
     # In a real system, you'd use a fine-tuned NER model or a large skills database.

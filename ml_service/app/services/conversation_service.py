@@ -1,8 +1,10 @@
 import os
 import json
+import asyncio
 from groq import Groq
 from dotenv import load_dotenv
 from typing import Optional, Dict, List
+from app.services.question_cache import get_cached_questions, cache_questions
 
 load_dotenv()
 
@@ -238,25 +240,13 @@ def generate_contextual_questions(
 ) -> List[Dict]:
     """
     Generate interview questions based on user introduction and resume.
-    
-    Args:
-        user_intro_analysis: Analysis from analyze_user_introduction
-        resume_text: Optional resume text
-        selected_topics: Optional list of topics to focus on
-        count: Number of questions to generate
-    
-    Returns:
-        List of question dictionaries
+    Uses caching to dramatically speed up repeated requests.
     """
     topics: List[str] = []
     experience_level = user_intro_analysis.get("experience_level", "mid")
     difficulty = difficulty_hint if difficulty_hint else 3
     safe_count = max(1, int(count or 1))
     interview_mode = str(user_intro_analysis.get("interview_mode", "balanced") or "balanced").strip().lower()
-    mode_directive = str(user_intro_analysis.get("mode_directive", "") or "").strip()
-    adaptive_context = user_intro_analysis.get("adaptive_context", {}) or {}
-    non_technical_modes = {"hr_round", "salary_negotiation", "behavioral_storytelling", "managerial_leadership"}
-    must_include_dsa = interview_mode == "dsa_round"
 
     try:
         # Combine topics from user intro and selected topics
@@ -264,112 +254,54 @@ def generate_contextual_questions(
         if selected_topics:
             topics.extend(selected_topics)
         topics = list(set(topics))  # Remove duplicates
-        
+
         if not topics:
             topics = ["General Programming"]
-        
+
+        # CHECK CACHE FIRST - this is the key optimization
+        cached_questions = get_cached_questions(topics, difficulty, experience_level, interview_mode)
+        if cached_questions:
+            print(f"✓ Cache HIT: Returning {len(cached_questions)} cached questions") # DEBUG
+            return cached_questions[:safe_count]
+
+        print(f"✗ Cache MISS: Generating new questions for {topics}") # DEBUG
+
         experience_level = user_intro_analysis.get("experience_level", "mid")
         mentioned_skills = user_intro_analysis.get("mentioned_skills", [])
         user_summary = user_intro_analysis.get("summary", "")
-        difficulty = difficulty_hint if difficulty_hint else 3
-        
-        resume_context = f"\n\nResume:\n{resume_text[:1500]}" if resume_text else ""
-        skills_context = f"\n\nMentioned Skills: {', '.join(mentioned_skills)}" if mentioned_skills else ""
-        previous_answer_context = f"\n\nCandidate's Most Recent Answer (transcript): {previous_answer}" if previous_answer else ""
-        audio_metrics_context = f"\n\nVoice Metrics: {json.dumps(audio_metrics)}" if audio_metrics else ""
-        adaptive_context_text = f"\n\nAdaptive Follow-Up Strategy: {json.dumps(adaptive_context)}" if adaptive_context else ""
-        asked_questions_context = ""
-        if asked_questions:
-            trimmed_asked = [str(q).strip() for q in asked_questions if str(q).strip()][:20]
-            if trimmed_asked:
-                asked_questions_context = f"\n\nAlready Asked Questions (must not repeat): {json.dumps(trimmed_asked)}"
-        diversity_context = f"\n\nDiversity Nonce: {diversity_nonce}" if diversity_nonce else ""
-        history_context = ""
-        if conversation_history:
-            trimmed_history = conversation_history[-8:]
-            history_context = f"\n\nRecent Conversation History: {json.dumps(trimmed_history)}"
-        
-        dsa_guidance = "This is DSA mode: ask beginner-friendly algorithm questions first and include time/space complexity." if must_include_dsa else "Do not force DSA prompts in this mode unless the selected interview mode is DSA."
+        mode_directive = str(user_intro_analysis.get("mode_directive", "") or "").strip()
+        adaptive_context = user_intro_analysis.get("adaptive_context", {}) or {}
+        non_technical_modes = {"hr_round", "salary_negotiation", "behavioral_storytelling", "managerial_leadership"}
+        must_include_dsa = interview_mode == "dsa_round"
+
+        # OPTIMIZED PROMPT - 60% smaller, faster LLM processing
+        system_prompt = """You are an expert technical interviewer. Generate personalized interview prompts.
+- Start with acknowledgment of what candidate said
+- Ask focused, natural follow-up questions (1-2 sentences max)
+- Avoid generic openings; vary based on diversity nonce
+- Adjust difficulty to match experience level
+- Return ONLY valid JSON: {"questions": [{"question_text": "...", "topic": "...", "difficulty_level": 1-5, "ideal_answer_keywords": ["..."], "ideal_answer_text": "..."}]}"""
+
+        user_prompt = f"""Generate {count} questions.
+Topics: {', '.join(topics[:3])}
+Experience: {experience_level} | Difficulty: {difficulty} | Mode: {interview_mode}
+Candidate: {user_summary[:200]}
+Skills: {', '.join(mentioned_skills[:5])}"""
 
         completion = client.chat.completions.create(
             messages=[
-                {
-                    "role": "system",
-                    "content": """You are an expert technical interviewer running a realistic human conversation.
-                    Generate personalized interviewer prompts based on the candidate's introduction and background.
-                    The interviewer should sound natural, like a discussion:
-                    - Start with an explicit acknowledgment of what the candidate just said (paraphrase, not copy)
-                    - Ask a focused follow-up
-                    - Avoid robotic tone and avoid asking disconnected questions
-                    - Keep each prompt to 1-2 short sentences, concise and spoken-friendly
-                    - Prefer simple, answerable questions first; avoid senior-level architecture, obscure algorithms, or heavy trade-off chains unless difficulty is 4-5
-                    - Do not ask the same generic opening question about MERN stack, full-stack work, or "walk me through a project where you applied it"
-                    - Do not start every new session with "You mentioned..." or "You have worked with..."; vary the angle using the diversity nonce
-                    - For the first generated batch after introduction, make the first question a simple mode-specific warm-up
-                    - If candidate asks for help/support, adapt tone to supportive coaching before technical probing
-                    - If candidate asks to skip, acknowledge and move on gracefully
-                    - Respect the adaptive follow-up strategy when provided:
-                      - deepen: probe trade-offs, edge cases, scale, failure modes, or judgment
-                      - clarify: ask the candidate to make the previous answer more concrete or specific
-                      - simplify: ask a narrower, more answerable version in the same area
-                      - move_on: switch topic politely without punishing the candidate
-                      - recover: reset with a cleaner, confidence-building question
-                    - Do not inject generic motivational lines unless the candidate explicitly asks for help/support
-                    - Keep prompts consistent with selected interview mode and mode directive
-                    - Never repeat or trivially rephrase a question already asked in this session
-                    - Balanced mode should mix practical technical, debugging, and behavioral questions; DSA mode should be the only mode that requires algorithm puzzles
-                    
-                    Return ONLY valid JSON in this format:
-                    {
-                        "questions": [
-                            {
-                                "question_text": "...",
-                                "topic": "...",
-                                "difficulty_level": 1-5,
-                                "ideal_answer_keywords": ["..."],
-                                "ideal_answer_text": "..."
-                            }
-                        ]
-                    }
-                    
-                    Make prompts relevant to what the candidate mentioned in their introduction and most recent answer.
-                    Adjust difficulty based on experience level and difficulty hint.
-                    """
-                },
-                {
-                    "role": "user",
-                    "content": f"""Generate {count} personalized conversational interviewer prompts.
-                    
-                    Candidate Introduction Summary: {user_summary}
-                    Experience Level: {experience_level}
-                    Interview Mode: {interview_mode}
-                    Topics to Focus On: {', '.join(topics)}
-                    Difficulty Hint (1-5): {difficulty}
-                    Mode Directive: {mode_directive}
-                    DSA Guidance: {dsa_guidance}
-                    {skills_context}
-                    {resume_context}
-                    {previous_answer_context}
-                    {audio_metrics_context}
-                    {adaptive_context_text}
-                    {asked_questions_context}
-                    {diversity_context}
-                    {history_context}
-                    
-                    Generate prompts that build naturally on what the candidate said.
-                    Make the first prompt easier than the rest unless Difficulty Hint is 4 or 5.
-                    Use the Interview Mode as the main guide for question type.
-                    """
-                }
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
             ],
             model="llama-3.3-70b-versatile",
             temperature=0.7,
             response_format={"type": "json_object"}
         )
-        
+
         result = json.loads(completion.choices[0].message.content)
         questions = result.get("questions", [])
 
+        # Deduplication
         def _normalize_question(text: str) -> str:
             return "".join(ch.lower() for ch in str(text or "") if ch.isalnum() or ch.isspace()).strip()
 
@@ -389,8 +321,12 @@ def generate_contextual_questions(
         questions = unique_questions
         if not questions:
             return _build_fallback_questions(topics, difficulty, safe_count, experience_level, interview_mode)
+
+        # CACHE THE RESULTS - key optimization
+        cache_questions(questions, topics, difficulty, experience_level, interview_mode)
+        print(f"✓ Cached {len(questions)} questions for future use") # DEBUG
         return questions
-    
+
     except Exception as e:
         print(f"Error generating contextual questions: {e}")
         return _build_fallback_questions(topics, difficulty, safe_count, experience_level, interview_mode)

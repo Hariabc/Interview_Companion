@@ -6,7 +6,10 @@
   "scripts": {
     "start": "node dist/index.js",
     "dev": "nodemon src/index.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "start:ml": "cd ../ml_service && python -m uvicorn app.main:app --port 8000 --host 0.0.0.0",
+    "start:both": "concurrently \"npm start\" \"npm run start:ml\"",
+    "dev:both": "concurrently \"npm run dev\" \"npm run start:ml\""
   },
   "keywords": [],
   "author": "",
@@ -14,6 +17,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
     "axios": "^1.13.4",
+    "concurrently": "^8.2.2",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",

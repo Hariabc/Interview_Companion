@@ -1,50 +1,21 @@
-# Environment Variables
+node_modules/
+.next/
+dist/
+venv/
+venv311/
+__pycache__/
+*.pyc
 .env
 .env.local
-.env.production
-.env.development
-.env.test
-
-# Node.js
-node_modules/
+.env.production.local
+.DS_Store
+*.log
+.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-dist/
-build/
-.next/
+.idea/
 .vscode/
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-venv/
-.venv/
-env/
-.env/
-ml_service/research/data/
-ml_service/temp_audio/
-
-# OS Files
-.DS_Store
-Thumbs.db
-
-# Logs
-logs
-*.log
-
-# Uploads (use Supabase Storage instead)
-uploads/
-backend/uploads/
-
-# Debug and Test Files
-**/debug_*.ts
-**/debug_*.js
-**/debug_*.py
-**/test_*.js
-**/check_*.ts
-
-# Temporary Files
-*.tmp
-*.temp
+.cache/
+build/
+.turbo/
