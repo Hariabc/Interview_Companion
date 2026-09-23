@@ -1,7 +1,6 @@
 🎓 Interview Companion – AI-Powered Mock Interview Platform
 
-"Status" (https://img.shields.io/badge/status-production%20ready-brightgreen)
-"Version" (https://img.shields.io/badge/version-1.0.0-blue)
+
 
 🌟 Overview
 
