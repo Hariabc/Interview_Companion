@@ -1,423 +1,146 @@
-# 🎓 Interview Companion - AI-Powered Mock Interview Platform
+🎓 Interview Companion – AI-Powered Mock Interview Platform
 
-![Status](https://img.shields.io/badge/status-production%20ready-brightgreen)
-![License](https://img.shields.io/badge/license-MIT-blue)
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
+Overview
 
-## 🌟 Overview
+Interview Companion is a full-stack AI-powered mock interview platform designed to help candidates practice technical and behavioral interviews through AI-driven conversations, coding challenges, and performance analysis.
 
-**Interview Companion** is a full-stack AI-powered mock interview platform that helps candidates practice technical interviews with:
+Key Features
 
-- 🎤 **Voice Interaction** - Natural conversation with AI interviewer
-- 🧠 **Intelligent Question Generation** - Context-aware questions based on resume & topics
-- ⚡ **Smart Answer Evaluation** - Real-time scoring with actionable feedback
-- 💻 **Coding Challenges** - Practice coding problems with test cases
-- 📊 **Performance Analytics** - Detailed reports and improvement recommendations
-- 🎯 **Adaptive Difficulty** - Questions adjust based on performance
+- 🎤 Voice Interaction – Conversational AI-powered mock interviews
+- 🧠 AI Question Generation – Context-aware questions based on resume and selected topics
+- ⚡ Answer Evaluation – AI-based scoring with actionable feedback
+- 💻 Coding Challenges – Practice programming problems with test cases
+- 📊 Performance Analytics – Track interview performance and identify improvement areas
+- 🎯 Adaptive Difficulty – Adjust questions based on candidate performance
 
----
+Interview Modes
 
-## 🏗️ Architecture
+- Behavioral Interview
+- Technical Interview
+- DSA Interview
+- System Design Interview
+- HR Interview
+- Salary Negotiation
 
-### Tech Stack
+AI Capabilities
 
-**Frontend**
-- Next.js 14 (React)
+- Resume-aware question generation
+- Context-aware follow-up questions
+- Answer evaluation and scoring
+- Semantic understanding of responses
+- Keyword and concept analysis
+- Grammar and clarity evaluation
+- Personalized feedback
+- Adaptive interview difficulty
+
+Tech Stack
+
+Frontend
+
+- Next.js 14
+- React
 - TypeScript
 - Tailwind CSS
-- Supabase Auth
+- Supabase Authentication
 
-**Backend**
-- Node.js + Express
+Backend
+
+- Node.js
+- Express.js
 - TypeScript
-- Supabase (Database & Storage)
+- Supabase
 
-**ML Service**
-- Python + FastAPI
-- Groq LLM (llama-3.3-70b)
-- Deepgram (Speech-to-Text/Text-to-Speech)
-- scikit-learn (ML processing)
+AI / ML
 
-**Infrastructure**
-- Vercel (Frontend hosting)
-- Render (Backend + ML Service)
-- Supabase (Database & Storage)
-- Groq Cloud (LLM API)
+- Python
+- FastAPI
+- Groq LLM
+- Deepgram
+- scikit-learn
 
-### Service Architecture
+Deployment
 
-```
-┌─────────────────────────────────────────┐
-│           Frontend (Vercel)             │
-│        Next.js React App                │
-└──────────────────┬──────────────────────┘
-                   │ HTTPS API Calls
-┌──────────────────▼──────────────────────┐
-│         Backend (Render)                │
-│      Express.js API Server              │
-│         Port: 3000                      │
-└──────────────┬──────────────────────────┘
-               │ Internal Calls
-    ┌──────────▼──────────┐
-    │ ML Service (Python) │
-    │ FastAPI Server      │
-    │ Port: 8000          │
-    └──────────┬──────────┘
-               │
-    ┌──────────┼──────────┐
-    │          │          │
-    ▼          ▼          ▼
- Groq API  Deepgram   Supabase
-  (LLM)     (STT/TTS)   (DB)
-```
+- Vercel
+- Render
+- Supabase
 
----
+Architecture
 
-## 🚀 Getting Started
+Frontend
+Next.js + React
+      │
+      │ HTTPS API
+      ▼
+Backend
+Node.js + Express
+      │
+      │ Internal API
+      ▼
+ML Service
+Python + FastAPI
+      │
+      ├── Groq LLM
+      ├── Deepgram
+      └── Supabase
 
-### Prerequisites
+Performance Optimizations
 
-- Node.js 18+ 
-- Python 3.11+
-- npm or yarn
-- Git
+- Question caching for repeated requests
+- Optimized prompts to reduce token usage
+- Quick scoring heuristics for common responses
+- Reduced unnecessary API calls
+- Cache management and statistics
 
-### Local Development
+Project Structure
 
-1. **Clone & Install**
-```bash
-git clone https://github.com/yourusername/interview-companion.git
-cd interview-companion
-
-# Backend
-cd backend
-npm install
-
-# ML Service
-cd ../ml_service
-python -m venv venv
-source venv/Scripts/activate  # or `venv\Scripts\activate` on Windows
-pip install -r requirements.txt
-
-# Frontend
-cd ../frontend
-npm install
-```
-
-2. **Environment Variables**
-```bash
-# backend/.env
-PORT=3000
-NODE_ENV=development
-SUPABASE_URL=your_supabase_url
-SUPABASE_ANON_KEY=your_anon_key
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
-ML_SERVICE_URL=http://localhost:8000
-
-# ml_service/.env
-GROQ_API_KEY=your_groq_api_key
-
-# frontend/.env.local
-NEXT_PUBLIC_BACKEND_URL=http://localhost:3000
-NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your_anon_key
-```
-
-3. **Start Services**
-```bash
-# Terminal 1: Backend
-cd backend
-npm run dev
-
-# Terminal 2: ML Service
-cd ml_service
-source venv/Scripts/activate
-python -m uvicorn app.main:app --reload --port 8000
-
-# Terminal 3: Frontend
-cd frontend
-npm run dev
-```
-
-4. **Access Application**
-- Frontend: http://localhost:3000
-- Backend: http://localhost:3000/api
-- ML Service: http://localhost:8000
-
----
-
-## 📦 Project Structure
-
-```
 interview-companion/
-├── frontend/                 # Next.js React App
-│   ├── app/                 # App router
-│   ├── components/          # React components
-│   ├── public/              # Static assets
-│   └── .env.local           # Environment variables
-├── backend/                 # Node.js Express Server
-│   ├── src/
-│   │   ├── index.ts         # Main server
-│   │   ├── routes/          # API routes
-│   │   ├── services/        # Business logic
-│   │   └── config/          # Configuration
-│   ├── dist/                # Compiled output
-│   └── .env                 # Environment variables
-├── ml_service/              # Python FastAPI Server
+├── frontend/
 │   ├── app/
-│   │   ├── main.py          # Main app
-│   │   ├── services/        # ML services
-│   │   │   ├── generator.py         # Question generation
-│   │   │   ├── scorer.py            # Answer evaluation
-│   │   │   ├── conversation_service.py
-│   │   │   ├── question_cache.py    # Caching (NEW)
-│   │   │   └── ...
-│   │   └── config/          # Configuration
-│   └── .env                 # Environment variables
-├── .env.example             # Example env template
-├── .gitignore               # Git ignore rules
-├── DEPLOYMENT_GUIDE.md      # Deployment instructions
-├── HOSTING_DEPLOYMENT_PLAN.md  # Hosting strategy
-├── PERFORMANCE_IMPROVEMENTS.md  # Optimization details
-└── README.md                # This file
-```
+│   ├── components/
+│   └── public/
+│
+├── backend/
+│   └── src/
+│       ├── routes/
+│       ├── services/
+│       └── config/
+│
+├── ml_service/
+│   └── app/
+│       ├── services/
+│       └── config/
+│
+└── README.md
 
----
+Core API Endpoints
 
-## ⚡ Performance Optimizations
+Backend
 
-### Implemented (Phase 1)
+GET  /
+POST /interviews/start
+POST /interviews/answer
+GET  /interviews/:id/report
 
-✅ **Question Caching** - 90% faster repeated requests  
-✅ **Quick Scoring Heuristics** - 60-80% faster evaluation  
-✅ **Optimized Prompts** - 60% smaller, 30-40% faster  
-✅ **Cache Management** - Statistics endpoints  
+ML Service
 
-### Expected Results
+GET  /
+POST /conversation/generate_contextual_questions
+POST /score_answer
+GET  /cache/stats
 
-| Metric | Before | After |
-|--------|--------|-------|
-| Question Generation | 8-15s | 4-7s (1st) / <100ms (cached) |
-| Answer Evaluation | 5-10s | 1-3s (LLM) / <50ms (heuristic) |
-| Cache Hit Rate | 0% | 40-60% |
-| API Calls Reduced | - | 70% |
+Future Improvements
 
-See `PERFORMANCE_IMPROVEMENTS.md` for details.
-
----
-
-## 🔑 Key Features
-
-### Interview Modes
-
-1. **Behavioral Round** - STAR-based questions
-2. **Technical Round** - Coding and design questions
-3. **DSA Round** - Algorithm and data structure problems
-4. **System Design** - Architecture and scaling questions
-5. **HR Round** - HR and soft skill questions
-6. **Salary Negotiation** - Compensation discussion practice
-
-### Question Types
-
-- Resume-aware contextual questions
-- Adaptive difficulty based on performance
-- Topic-specific questions
-- Follow-up questions for clarification
-- Real-time feedback
-
-### Answer Evaluation
-
-- Semantic understanding analysis
-- Keyword matching
-- Grammar and clarity scoring
-- Comparison with ideal answers
-- Actionable feedback generation
-
----
-
-## 🔐 Security
-
-- ✅ Environment variables never committed to git
-- ✅ HTTPS enforced in production
-- ✅ CORS configured for authorized domains
-- ✅ Database credentials encrypted
-- ✅ API rate limiting (configurable)
-- ✅ Input validation on all endpoints
-- ✅ Error messages don't expose sensitive data
-
----
-
-## 📊 Deployment
-
-### Quick Deploy (30 minutes)
-
-See **`DEPLOY.md`** for complete step-by-step instructions.
-
-**Production Stack:**
-- Frontend: Vercel (Free)
-- Backend + ML: Render ($7/month)
-- Database: Supabase (Your setup - $0)
-- LLM API: Groq ($0-20/month)
-- **Total Cost:** $7-27/month
-
-**What's Ready:**
-- ✅ Performance optimizations applied
-- ✅ Caching system (90% faster repeated requests)
-- ✅ Quick scoring heuristics (60-80% faster evaluation)
-- ✅ Optimized prompts (60% token reduction)
-- ✅ Production-ready configuration
-
----
-
-## 🧪 Testing
-
-### Manual Testing
-
-```bash
-# Test Backend
-curl http://localhost:3000/
-
-# Test ML Service
-curl http://localhost:8000/
-
-# Test Cache Stats
-curl http://localhost:8000/cache/stats
-```
-
-### API Endpoints
-
-**Backend (Node.js)**
-- `GET /` - Health check
-- `POST /interviews/start` - Start interview
-- `POST /interviews/answer` - Submit answer
-- `GET /interviews/:id/report` - Get report
-
-**ML Service (Python)**
-- `GET /` - Health check
-- `POST /conversation/generate_contextual_questions` - Generate questions
-- `POST /score_answer` - Score answer
-- `GET /cache/stats` - Cache statistics
-- `POST /cache/clear` - Clear cache
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Commit with clear messages
-5. Push and create a Pull Request
-
----
-
-## 📈 Roadmap
-
-### Phase 1 ✅ (Completed)
-- Basic interview functionality
-- Question generation
-- Answer evaluation
-- Performance optimizations
-
-### Phase 2 🚀 (In Progress)
-- Parallelized LLM calls
-- Question template library
-- Streaming responses
-- Better deduplication
-
-### Phase 3 📅 (Planned)
-- User authentication & profiles
-- Interview history & analytics
+- Streaming AI responses
+- Expanded question library
+- Improved question deduplication
+- Interview history and analytics
+- Custom interview templates
 - Team/group interviews
-- Custom question templates
-- Mobile app
 
----
+License
 
-## 🐛 Troubleshooting
+MIT License
 
-### ML Service Not Starting
-```bash
-# Check Python version
-python --version  # Should be 3.11+
+:::
 
-# Reinstall dependencies
-pip install -r requirements.txt
-
-# Check Groq API key
-echo $GROQ_API_KEY
-```
-
-### Frontend Won't Connect to Backend
-```bash
-# Check backend is running
-curl http://localhost:3000
-
-# Verify CORS is configured
-# Check browser console for CORS errors
-# Update NEXT_PUBLIC_BACKEND_URL in .env.local
-```
-
-### Database Connection Issues
-```bash
-# Verify Supabase credentials
-echo $SUPABASE_URL
-echo $SUPABASE_ANON_KEY
-
-# Test connection from backend
-npm run test:db
-```
-
----
-
-## 📚 Documentation
-
-- **`DEPLOY.md`** - Complete production deployment guide (30 minutes)
-- API Documentation - See inline in code or test endpoints directly
-
----
-
-## 📞 Support
-
-- GitHub Issues: Report bugs
-- Discussions: Ask questions
-- Email: support@interviewcompanion.io
-
----
-
-## 📄 License
-
-MIT License - see LICENSE file for details
-
----
-
-## 👨‍💻 Authors
-
-- **Your Name** - Full Stack Developer
-
----
-
-## 🙏 Acknowledgments
-
-- Groq for LLM API
-- Deepgram for STT/TTS
-- Supabase for database
-- Vercel & Render for hosting
-
----
-
-## 📊 Analytics & Monitoring
-
-Track metrics:
-- User sessions created
-- Questions generated
-- Answers evaluated
-- Average session duration
-- User performance trends
-
----
-
-**Last Updated:** August 25, 2026  
-**Status:** Production Ready ✅
+This version keeps the **important technical and project information** while removing unnecessary details like pricing, troubleshooting, contribution instructions, support email, deployment steps, environment variables, and overly detailed claims.
