@@ -126,7 +126,7 @@ ML Service
 GET  /
 POST /conversation/generate_contextual_questions
 POST /score_answer
-GET  /cache/stats
+GET /cache/stats
 
 Future Improvements
 
@@ -137,10 +137,5 @@ Future Improvements
 - Custom interview templates
 - Team/group interviews
 
-License
-
-MIT License
 
 :::
-
-This version keeps the **important technical and project information** while removing unnecessary details like pricing, troubleshooting, contribution instructions, support email, deployment steps, environment variables, and overly detailed claims.
